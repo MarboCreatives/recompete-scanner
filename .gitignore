@@ -1,0 +1,22 @@
+# Secrets. Connection strings and API keys live in Vercel and GitHub
+# environment variables, never in the repository.
+.env
+.env.*
+!.env.example
+
+# Python (scanner/)
+__pycache__/
+*.pyc
+.venv/
+scanner/snapshots/*.json
+scanner/snapshots/*.csv
+
+# Node (app/) has its own .gitignore; these cover anything at the root.
+node_modules/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
