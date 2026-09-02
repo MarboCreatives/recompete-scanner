@@ -1,8 +1,13 @@
 # Secrets. Connection strings and API keys live in Vercel and GitHub
 # environment variables, never in the repository.
-.env
-.env.*
-!.env.example
+#
+# `vercel link` and `vercel env pull` both append `.env*` and `.vercel` here
+# whenever they run, so those two patterns are left exactly as Vercel writes
+# them and nothing is un-ignored underneath. Required environment variables are
+# documented in docs/ENVIRONMENT.md instead of a committed .env.example, which
+# `.env*` would hide.
+.vercel
+.env*
 
 # Python (scanner/)
 __pycache__/
@@ -11,7 +16,7 @@ __pycache__/
 scanner/snapshots/*.json
 scanner/snapshots/*.csv
 
-# Node (app/) has its own .gitignore; these cover anything at the root.
+# Node (app/) has its own .gitignore; this covers anything at the root.
 node_modules/
 
 # Editors and OS
