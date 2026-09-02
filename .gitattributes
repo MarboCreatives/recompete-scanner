@@ -1,0 +1,7 @@
+# Store every text file with LF line endings, whatever the checkout platform.
+# Git for Windows otherwise rewrites files to CRLF on checkout and warns on every add.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
