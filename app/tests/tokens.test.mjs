@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
-import { connectToTestDatabase, truncateAll } from './helpers.mjs'
+import { withDatabase } from './helpers.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const { newToken, hashToken, isTokenShaped } = await import(
@@ -59,43 +59,35 @@ test('isTokenShaped accepts what newToken makes and refuses everything else', ()
 })
 
 test('a real token round-trips through the database columns', async () => {
-  const client = await connectToTestDatabase()
-  await truncateAll(client)
+  await withDatabase(async (client) => {
+    const raw = newToken()
+    const hash = hashToken(raw)
+    await client.query(
+      "insert into sign_in_tokens (token_hash, email, expires_at) values ($1, $2, now() + interval '15 minutes')",
+      [hash, 'someone@example.com'],
+    )
 
-  const raw = newToken()
-  const hash = hashToken(raw)
-  await client.query(
-    "insert into sign_in_tokens (token_hash, email, expires_at) values ($1, $2, now() + interval '15 minutes')",
-    [hash, 'someone@example.com'],
-  )
-
-  // Looking a token up is done by digest, exactly as the application will.
-  const found = await client.query('select email from sign_in_tokens where token_hash = $1', [
-    hashToken(raw),
-  ])
-  assert.equal(found.rows.length, 1, 'the digest computed twice must find the row')
-  assert.equal(found.rows[0].email, 'someone@example.com')
-
-  await truncateAll(client)
-  await client.end()
+    // Looking a token up is done by digest, exactly as the application will.
+    const found = await client.query('select email from sign_in_tokens where token_hash = $1', [
+      hashToken(raw),
+    ])
+    assert.equal(found.rows.length, 1, 'the digest computed twice must find the row')
+    assert.equal(found.rows[0].email, 'someone@example.com')
+  })
 })
 
 test('the database refuses a digest that is not 64 lowercase hex characters', async () => {
-  const client = await connectToTestDatabase()
-  await truncateAll(client)
-
-  for (const bad of ['not-a-hash', 'A'.repeat(64), '0'.repeat(63), '0'.repeat(65)]) {
-    await assert.rejects(
-      () =>
-        client.query(
-          "insert into sign_in_tokens (token_hash, email, expires_at) values ($1, $2, now() + interval '15 minutes')",
-          [bad, 'someone@example.com'],
-        ),
-      (err) => err?.code === '23514',
-      `the column should have refused ${bad.slice(0, 20)}`,
-    )
-  }
-
-  await truncateAll(client)
-  await client.end()
+  await withDatabase(async (client) => {
+    for (const bad of ['not-a-hash', 'A'.repeat(64), '0'.repeat(63), '0'.repeat(65)]) {
+      await assert.rejects(
+        () =>
+          client.query(
+            "insert into sign_in_tokens (token_hash, email, expires_at) values ($1, $2, now() + interval '15 minutes')",
+            [bad, 'someone@example.com'],
+          ),
+        (err) => err?.code === '23514',
+        `the column should have refused ${bad.slice(0, 20)}`,
+      )
+    }
+  })
 })

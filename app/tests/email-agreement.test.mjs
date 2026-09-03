@@ -16,7 +16,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
-import { connectToTestDatabase, truncateAll } from './helpers.mjs'
+import { withDatabase } from './helpers.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const { normalizeEmail } = await import(
@@ -83,51 +83,43 @@ async function databaseAccepts(client, address) {
 }
 
 test('every address normalizeEmail accepts is one the database will store', async () => {
-  const client = await connectToTestDatabase()
-  await truncateAll(client)
-
-  const disagreements = []
-  for (const input of CORPUS) {
-    const normalised = normalizeEmail(input)
-    if (normalised === null) continue
-    const accepted = await databaseAccepts(client, normalised)
-    if (!accepted) {
-      disagreements.push(
-        `normalizeEmail(${JSON.stringify(input)}) returned ` +
-          `${JSON.stringify(normalised)}, which the database refuses. ` +
-          'A person typing this is emailed a link and then locked out.',
-      )
+  await withDatabase(async (client) => {
+    const disagreements = []
+    for (const input of CORPUS) {
+      const normalised = normalizeEmail(input)
+      if (normalised === null) continue
+      const accepted = await databaseAccepts(client, normalised)
+      if (!accepted) {
+        disagreements.push(
+          `normalizeEmail(${JSON.stringify(input)}) returned ` +
+            `${JSON.stringify(normalised)}, which the database refuses. ` +
+            'A person typing this is emailed a link and then locked out.',
+        )
+      }
     }
-  }
-
-  await truncateAll(client)
-  await client.end()
-  assert.deepEqual(disagreements, [], disagreements.join('\n'))
+    assert.deepEqual(disagreements, [], disagreements.join('\n'))
+  })
 })
 
 test('normalizeEmail is not needlessly stricter than the database', async () => {
   // The other direction is not a lockout, only an address turned away for no
   // reason. Worth knowing about, so it is asserted rather than assumed.
-  const client = await connectToTestDatabase()
-  await truncateAll(client)
-
-  const overStrict = []
-  for (const input of CORPUS) {
-    if (typeof input !== 'string') continue
-    const alreadyNormal = input.trim().toLowerCase()
-    if (alreadyNormal !== input) continue // only compare like with like
-    if (normalizeEmail(input) !== null) continue
-    const accepted = await databaseAccepts(client, input)
-    if (accepted) {
-      overStrict.push(
-        `the database would store ${JSON.stringify(input)} but normalizeEmail refuses it`,
-      )
+  await withDatabase(async (client) => {
+    const overStrict = []
+    for (const input of CORPUS) {
+      if (typeof input !== 'string') continue
+      const alreadyNormal = input.trim().toLowerCase()
+      if (alreadyNormal !== input) continue // only compare like with like
+      if (normalizeEmail(input) !== null) continue
+      const accepted = await databaseAccepts(client, input)
+      if (accepted) {
+        overStrict.push(
+          `the database would store ${JSON.stringify(input)} but normalizeEmail refuses it`,
+        )
+      }
     }
-  }
-
-  await truncateAll(client)
-  await client.end()
-  assert.deepEqual(overStrict, [], overStrict.join('\n'))
+    assert.deepEqual(overStrict, [], overStrict.join('\n'))
+  })
 })
 
 test('the three addresses measured against the live constraint behave as recorded', async () => {
