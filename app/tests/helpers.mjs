@@ -42,10 +42,18 @@ export function testConnectionString() {
  */
 export async function connectToTestDatabase(connectionString = testConnectionString()) {
   const client = new Client({ connectionString })
-  // Attached before connect(). A wrong password does not reject connect(); it
-  // resolves and then throws asynchronously. Measured 2 September 2026.
+  // Attached before connect(), because a wrong password does not reject
+  // connect(); it resolves and the failure arrives later. Measured 2 September
+  // 2026.
+  //
+  // The handler records rather than throws. Throwing from here would surface
+  // after the test that owns the connection has finished, which Node reports as
+  // an unrelated uncaught exception rather than a test failure. Neon's free
+  // plan suspends an idle compute and closes the socket (57P01), so this fires
+  // in normal operation and must not be fatal. A genuine credential fault is
+  // still caught, by the round trip below.
   client.on('error', (err) => {
-    throw new Error(`the test database connection failed after opening; code ${err?.code}`)
+    client.recompeteLastError = err
   })
   await client.connect()
 
@@ -70,8 +78,53 @@ export async function truncateAll(client) {
   )
 }
 
-/** sha256 hex, matching what the application stores for a token. */
-export async function sha256Hex(value) {
-  const { createHash } = await import('node:crypto')
-  return createHash('sha256').update(value).digest('hex')
+
+/**
+ * The text a reader would see, with markup removed.
+ *
+ * Asserting against raw HTML is brittle: React inserts empty comment markers
+ * between interpolated text nodes, so `You are about to sign in as {email}.`
+ * arrives as `as <!-- -->someone@example.com<!-- -->.` and a plain substring
+ * match fails on correct output. Stripping to visible text also means an
+ * assertion keeps passing when markup changes but the promise does not, which
+ * is the property these checks are actually about.
+ */
+export function visibleText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&apos;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * Run a test body with a database connection that is always closed.
+ *
+ * Written after a real failure: a test that threw skipped its `await db.end()`,
+ * the Neon socket stayed open, and `node --test` waited for the event loop to
+ * drain, so the whole run hung instead of reporting a failure. A suite that
+ * hangs on failure is worse than one that fails, because in CI it reads as a
+ * timeout rather than as the specific thing that broke.
+ */
+export async function withDatabase(fn) {
+  const client = await connectToTestDatabase()
+  try {
+    await truncateAll(client)
+    return await fn(client)
+  } finally {
+    try {
+      await truncateAll(client)
+    } catch {
+      // Tidying failed; closing the connection still matters more.
+    }
+    await client.end().catch(() => {})
+  }
 }
