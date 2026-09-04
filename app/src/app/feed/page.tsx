@@ -2,6 +2,7 @@
 //
 // The empty state says what happens next rather than pretending to be a result.
 
+import Link from 'next/link'
 import { requireUser } from '@/lib/session'
 import { DatabaseOutage } from '@/components/database-outage'
 
@@ -27,6 +28,10 @@ export default async function FeedPage() {
       <form method="post" action="/auth/sign-out">
         <button type="submit">Sign out</button>
       </form>
+
+      <p>
+        <Link href="/account">Your account</Link>
+      </p>
     </main>
   )
 }
