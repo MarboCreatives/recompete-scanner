@@ -92,10 +92,8 @@ export default function PrivacyPage() {
         in Washington, and our email is sent by a United States company.
       </p>
       <p>
-        We looked for a Canadian option and our database provider does not offer one.
-        Being stored in the United States means the data can be subject to United States
-        law, including lawful access requests, in ways Canadian data is not. If that is
-        not acceptable to you, please do not create an account.
+        Data held there is subject to United States law, including lawful access
+        requests, in ways data held in Canada is not.
       </p>
 
       <h2>Deleting your account</h2>
