@@ -262,11 +262,30 @@ test('the privacy policy carries the legal details and the cross-border disclosu
 
   // Storing personal data outside Canada has to be disclosed, and the reason
   // given plainly rather than buried.
+  //
+  // Both assertions below are substring matches, and a substring match cannot
+  // tell a promise from its own denial: 'subject to United States law' is
+  // contained in 'never subject to United States law', which is the opposite
+  // claim. The old check passed on an inverted page; that was found by writing
+  // the inverted page and watching it stay green, not by reading it. So the
+  // whole sentence is matched rather than a fragment of it, and the denials are
+  // ruled out separately. The list is a tripwire and not a proof, in the same
+  // sense as the events_no_buyer_name constraint: it catches the rewrites
+  // someone would plausibly make, and the wording itself remains the promise.
   assert.ok(text.includes('In the United States'), 'where the data lives must be stated')
   assert.ok(
-    text.includes('subject to United States law'),
+    text.includes('Data held there is subject to United States law'),
     'the consequence of storing it there must be stated',
   )
+  for (const denial of [
+    'not subject to United States law',
+    'never subject to United States law',
+    'not stored in the United States',
+    'not held in the United States',
+    'stored in Canada',
+  ]) {
+    assert.ok(!text.includes(denial), `the policy must not take the disclosure back: "${denial}"`)
+  }
 
   // Claims the code actually keeps.
   assert.ok(text.includes('No password.'))
