@@ -42,14 +42,30 @@ export default async function FeedPage() {
 
   return (
     <main>
-      <h1>Your feed</h1>
-      <p>Signed in as {state.user.email}.</p>
+      <p className="eyebrow">Your feed</p>
+      <h1>What you are following</h1>
+      <p className="sb">Signed in as {state.user.email}.</p>
 
       {watching === 0 ? (
         <NothingWatched />
       ) : (
         <>
-          <p>{watchingSentence(contracts, vendors)}</p>
+          {/*
+            The site's own stat cards. The sentence is kept underneath rather
+            than replaced: the cards are read at a glance and the sentence is
+            what a screen reader and a person scanning for plain words get.
+          */}
+          <div className="cd">
+            <div className="c">
+              <div className="v">{contracts}</div>
+              <div className="l">{contracts === 1 ? 'Contract' : 'Contracts'}</div>
+            </div>
+            <div className="c">
+              <div className="v">{vendors}</div>
+              <div className="l">{vendors === 1 ? 'Supplier' : 'Suppliers'}</div>
+            </div>
+          </div>
+          <p className="sb">{watchingSentence(contracts, vendors)}</p>
           <p>
             Nothing has changed on them yet. Change detection is not switched on in this
             release.
@@ -57,17 +73,19 @@ export default async function FeedPage() {
         </>
       )}
 
-      <p>
-        Expiry dates show the period a department has committed to. Many contracts carry
-        option years that are not published until they are exercised, so treat a date here
-        as the earliest a contract could come back, not a guarantee that it will.
-      </p>
+      <div className="notes">
+        <p className="sb">
+          Expiry dates show the period a department has committed to. Many contracts carry
+          option years that are not published until they are exercised, so treat a date
+          here as the earliest a contract could come back, not a guarantee that it will.
+        </p>
+      </div>
 
       <p>
         <Link href="/watchlist">Your watchlist</Link>
       </p>
 
-      <form method="post" action="/auth/sign-out">
+      <form method="post" action="/auth/sign-out" className="quiet">
         <button type="submit">Sign out</button>
       </form>
 

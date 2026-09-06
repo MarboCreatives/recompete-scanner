@@ -70,7 +70,8 @@ export default async function WatchlistPage({
 
   return (
     <main>
-      <h1>Your watchlist</h1>
+      <p className="eyebrow">Watchlist</p>
+      <h1>What you follow</h1>
 
       {message ? <p role="alert">{message}</p> : null}
 
@@ -92,7 +93,7 @@ export default async function WatchlistPage({
       {vendors.length > 0 ? (
         <>
           <h2>Suppliers</h2>
-          <p>{SUPPLIER_KEY_NOTE}</p>
+          <p className="sb">{SUPPLIER_KEY_NOTE}</p>
           <ul>
             {vendors.map((r) => (
               <li key={`vendor:${r.target_key}`}>
@@ -117,14 +118,14 @@ function ContractRow({ k, addedOn }: { k: string; addedOn: string }) {
   const { org, reference } = splitContractKey(k)
   return (
     <>
-      <p className="row-key">{reference}</p>
+      <p className="ref">{reference}</p>
       <p className="row-meta">
         Department {org} &middot; added {addedOn}
       </p>
       <p>
         <a href={governmentRecordUrl(k)}>Check it on the government record</a>
       </p>
-      <form method="post" action="/watch/remove">
+      <form method="post" action="/watch/remove" className="quiet">
         <input type="hidden" name="kind" value="contract" />
         <input type="hidden" name="key" value={k} />
         <button type="submit">Stop watching</button>
@@ -138,7 +139,7 @@ function SupplierRow({ k, addedOn }: { k: string; addedOn: string }) {
     <>
       <p className="row-key">{k}</p>
       <p className="row-meta">Added {addedOn}</p>
-      <form method="post" action="/watch/remove">
+      <form method="post" action="/watch/remove" className="quiet">
         <input type="hidden" name="kind" value="vendor" />
         <input type="hidden" name="key" value={k} />
         <button type="submit">Stop watching</button>

@@ -11,6 +11,7 @@
 
 import type { Metadata } from 'next'
 import Link from 'next/link'
+import { RadarMark } from '@/components/radar-mark'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -24,7 +25,10 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
       <body>
         <div className="shell">
           <header className="site-header">
-            <Link href="/">Canadian Recompete Radar</Link>
+            <Link href="/">
+              <RadarMark />
+              Canadian Recompete Radar
+            </Link>
           </header>
 
           {children}
