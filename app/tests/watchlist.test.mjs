@@ -204,7 +204,9 @@ test('a request with no Origin is forbidden and never reaches the database', asy
         body: new URLSearchParams({ kind: 'contract', key: CONTRACT }),
       })
       assert.equal(r.status, 403, `${path} must refuse a request with no Origin`)
-      assert.equal((await r.text()).trim(), 'Forbidden.')
+      const body = await r.text()
+      assert.match(body, /Not accepted from this address/)
+      assert.match(body, /nothing was submitted/)
     }
 
     for (const origin of ['https://evil.example', 'not a url', '']) {

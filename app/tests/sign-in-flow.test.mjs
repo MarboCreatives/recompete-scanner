@@ -157,7 +157,12 @@ test('a POST without a matching Origin is forbidden and touches nothing', async 
         body: new URLSearchParams({ email: ADDRESS, token: 'x' }),
       })
       assert.equal(r.status, 403, `${path} must refuse a request with no Origin`)
-      assert.equal((await r.text()).trim(), 'Forbidden.')
+      // The body used to be the bare word "Forbidden.". It now names the address
+      // that does work, because three of this deployment's four addresses are
+      // refused and the bare word looked exactly like the site being broken.
+      const body = await r.text()
+      assert.match(body, /Not accepted from this address/)
+      assert.match(body, /nothing was submitted/)
     }
 
     for (const origin of ['https://evil.example', 'not a url', '']) {

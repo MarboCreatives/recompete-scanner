@@ -20,10 +20,60 @@ export function see(path: string): NextResponse {
   return NextResponse.redirect(new URL(path, `${appUrl()}/`), 303)
 }
 
-/** The single response for a request that failed the same-origin check. */
+/** Minimal escaping for the one value that reaches the body below. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/**
+ * The single response for a request that failed the same-origin check.
+ *
+ * It used to be the bare word `Forbidden.` and nothing else. That cost the
+ * owner real time on 6 September 2026: this deployment answers on four
+ * addresses, and only the one `APP_URL` names is accepted. The other three are
+ * behind the hosting provider's own login, so somebody signed in there sees the
+ * sign-in page render perfectly, presses the button, and gets one unexplained
+ * word. It looks exactly like the site being broken, and it is the same bare
+ * 403 that an unset `APP_URL` produced twice before (G17, G21).
+ *
+ * So the page now names the address that does work. Nothing about the check
+ * itself is relaxed: this is the response to a request that was refused, and it
+ * is still refused. `APP_URL` is a public value printed on every page's links,
+ * so saying it here gives nothing away.
+ */
 export function forbidden(): Response {
-  return new Response('Forbidden.', {
+  let where: string | null = null
+  try {
+    where = appUrl()
+  } catch {
+    // appUrl() throws on a production deployment with nothing configured. A
+    // helper that crashed while explaining a refusal would answer 500 instead
+    // of 403, which is the one thing this must not do.
+    where = null
+  }
+
+  const line = where
+    ? `This site only accepts forms sent from <a href="${escapeHtml(where)}">${escapeHtml(where)}</a>. ` +
+      'You opened it at a different address, so nothing was submitted. Go there and try again.'
+    : 'This site could not confirm where the form was sent from, so nothing was submitted.'
+
+  const body = [
+    '<!doctype html>',
+    '<html lang="en"><head><meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<title>Not accepted from this address</title></head><body>',
+    '<main><h1>Not accepted from this address</h1>',
+    `<p>${line}</p>`,
+    '<p>Nothing was changed and nothing was sent.</p>',
+    '</main></body></html>',
+  ].join('')
+
+  return new Response(body, {
     status: 403,
-    headers: { 'content-type': 'text/plain; charset=utf-8' },
+    headers: { 'content-type': 'text/html; charset=utf-8' },
   })
 }
