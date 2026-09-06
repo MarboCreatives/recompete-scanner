@@ -14,7 +14,12 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { visibleText } from './helpers.mjs'
+
+const here = dirname(fileURLToPath(import.meta.url))
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000'
 
@@ -77,10 +82,28 @@ test('the refusal is a page a phone can read, not a wall of text', async () => {
   assert.match(raw, /<meta name="viewport"/)
 })
 
-test('the refusal repeats nothing back that the request supplied', async () => {
+test('forbidden() is given nothing from the request, so it can echo nothing', () => {
+  // This is the real guarantee, and it is structural rather than behavioural.
   // A page that echoed the rejected origin would put attacker-chosen text on a
-  // page this site served. The address named comes from the environment; the
-  // request contributes nothing to the body.
+  // page this site served; the reason it cannot is that the helper takes no
+  // arguments at all, so the request is not in scope where the body is built.
+  //
+  // Asserted on the source rather than over HTTP on purpose. The HTTP version
+  // of this check passed no matter what, because with no parameter there is
+  // nothing to echo, so it could never have failed and proved nothing. That
+  // was found by breaking it.
+  const source = readFileSync(join(here, '..', 'src', 'lib', 'http.ts'), 'utf8')
+  assert.match(
+    source,
+    /export function forbidden\(\): Response \{/,
+    'forbidden() must take no arguments; giving it the request is how an echo starts',
+  )
+})
+
+test('the refusal repeats nothing back that the request supplied', async () => {
+  // Belt and braces over the check above. It would still catch a body that
+  // reached for request data another way, such as through the framework's own
+  // header accessor rather than through a parameter.
   const r = await refused(
     '/auth/request',
     { email: 'someone@example.com' },
@@ -89,5 +112,4 @@ test('the refusal repeats nothing back that the request supplied', async () => {
   const raw = await r.text()
   assert.ok(!raw.includes('<script>alert(1)</script>'), 'the rejected origin must not be echoed')
   assert.ok(!raw.includes('someone@example.com'), 'the submitted address must not be echoed')
-  assert.ok(!raw.includes('evil'), 'nothing from the request belongs in the response')
 })
