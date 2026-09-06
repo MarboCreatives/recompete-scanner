@@ -103,7 +103,12 @@ test('the whole sign-in journey, following the link the application produced', a
     assert.equal(feed.status, 200)
     const feedHtml = visibleText(await feed.text())
     assert.match(feedHtml, /someone@example\.com/)
-    assert.match(feedHtml, /Following contracts and vendors arrives in the next release\./)
+    // This sentence changed when the watchlist was built. The feed used to say
+    // that following things arrived in a later release; it now says what this
+    // person actually follows. A brand-new account follows nothing, so it shows
+    // the nothing-watched sentence. tests/watchlist.test.mjs covers the counted
+    // case, including the singular and plural forms.
+    assert.match(feedHtml, /You are not watching anything yet\./)
     assert.match(feedHtml, /option years that are not published until they are exercised/)
 
     // 5. The same link cannot be used twice.
