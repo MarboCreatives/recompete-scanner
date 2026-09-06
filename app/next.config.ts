@@ -2,18 +2,41 @@ import type { NextConfig } from 'next'
 
 // Response headers sent with every path.
 //
-// Referrer-Policy: no-referrer is load-bearing, not decoration. The address of
-// the sign-in confirmation page carries the token in its query string, and the
-// watchlist links out to other sites. Without this header a browser following
-// one of those links would hand the referring URL, token included, to whoever
-// runs the destination. src/lib/same-origin.ts also relies on it: because no
-// Referer is ever sent, that file has no Referer fallback, and says so.
+// ## Referrer-Policy is `same-origin`, and must never be `no-referrer`
 //
-// Measured 5 September 2026 against the live deployment: this header was not
-// being sent at all, although the comment in same-origin.ts said it was. A
-// comment is not a header. tests/headers.test.mjs now asserts it over HTTP.
+// This policy is load-bearing in two opposite directions, and getting it wrong
+// took the live site down on 6 September 2026.
+//
+// **Why a policy at all.** The sign-in confirmation page carries the token in
+// its query string, and the watchlist links out to other sites. With no policy
+// a browser following one of those links hands the referring address, token
+// included, to whoever runs the destination. `same-origin` sends no Referer to
+// another site at all, which closes that completely. src/lib/same-origin.ts
+// relies on this: it has no Referer fallback, and says so.
+//
+// **Why not `no-referrer`, which looks stricter and is what shipped first.**
+// The Fetch standard makes a browser send `Origin: null` on a non-CORS POST
+// when the referrer policy is `no-referrer`. Every form on this site is a
+// non-CORS POST. `isSameOrigin()` parses that value, `new URL('null')` throws,
+// and the request is refused, so **every form answers 403**: sign in, sign
+// out, delete account, watch, unwatch. The site looks entirely broken and
+// nothing appears in any log.
+//
+// Measured rather than reasoned about. Same build, same machine, one header
+// changed, a real browser submitting the real form:
+//
+//     Referrer-Policy: no-referrer   ->  "Forbidden."
+//     Referrer-Policy: same-origin   ->  "Check your email"
+//
+// `same-origin` sets `Origin: null` only when the request is already
+// cross-origin, which this site refuses anyway, so the defence is unchanged.
+//
+// The check suite did not catch this, because every check sends its own
+// `Origin` header explicitly, the way `fetch` and `curl` do. Only a browser
+// navigating a real form reproduces it. tests/headers.test.mjs now asserts the
+// policy by name and says why.
 const SECURITY_HEADERS = [
-  { key: 'Referrer-Policy', value: 'no-referrer' },
+  { key: 'Referrer-Policy', value: 'same-origin' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
 ]
 

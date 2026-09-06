@@ -32,10 +32,27 @@ for (const c of CASES) {
     const expected = Array.isArray(c.expect) ? c.expect : [c.expect]
     assert.ok(expected.includes(r.status), `expected ${expected.join('/')} got ${r.status}`)
 
+    // The value matters as much as the presence of the header, and it is the
+    // value that took the live site down. Under `no-referrer` the Fetch
+    // standard makes a browser send `Origin: null` on a non-CORS POST, which
+    // is every form here; isSameOrigin() refuses that, so every form answers
+    // 403. Under `same-origin` no Referer reaches another site, which is the
+    // protection wanted, and the Origin header still arrives intact.
+    //
+    // No check here can reproduce that: they all send their own Origin header,
+    // the way fetch and curl do. Only a browser navigating a real form does.
+    // So the value is asserted by name, and no-referrer is ruled out
+    // explicitly rather than by implication.
+    const policy = r.headers.get('referrer-policy')
     assert.equal(
-      r.headers.get('referrer-policy'),
+      policy,
+      'same-origin',
+      'Referrer-Policy must be same-origin; a token in a URL would otherwise leak to any site we link to',
+    )
+    assert.notEqual(
+      policy,
       'no-referrer',
-      'Referrer-Policy: no-referrer must be present; a token in a URL would otherwise leak to any site we link to',
+      'no-referrer makes browsers send Origin: null on form posts, and every mutation route refuses those',
     )
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff')
     assert.equal(r.headers.get('x-powered-by'), null, 'the framework header must be switched off')
