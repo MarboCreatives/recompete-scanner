@@ -117,11 +117,13 @@ function ContractRow({ k, addedOn }: { k: string; addedOn: string }) {
   const { org, reference } = splitContractKey(k)
   return (
     <>
-      <span>
-        {reference} ({org})
-      </span>{' '}
-      <a href={governmentRecordUrl(k)}>Government record</a>{' '}
-      <span>Added {addedOn}</span>
+      <p className="row-key">{reference}</p>
+      <p className="row-meta">
+        Department {org} &middot; added {addedOn}
+      </p>
+      <p>
+        <a href={governmentRecordUrl(k)}>Check it on the government record</a>
+      </p>
       <form method="post" action="/watch/remove">
         <input type="hidden" name="kind" value="contract" />
         <input type="hidden" name="key" value={k} />
@@ -134,7 +136,8 @@ function ContractRow({ k, addedOn }: { k: string; addedOn: string }) {
 function SupplierRow({ k, addedOn }: { k: string; addedOn: string }) {
   return (
     <>
-      <span>{k}</span> <span>Added {addedOn}</span>
+      <p className="row-key">{k}</p>
+      <p className="row-meta">Added {addedOn}</p>
       <form method="post" action="/watch/remove">
         <input type="hidden" name="kind" value="vendor" />
         <input type="hidden" name="key" value={k} />
