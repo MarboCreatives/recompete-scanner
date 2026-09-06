@@ -28,15 +28,30 @@ import type { NextConfig } from 'next'
 //     Referrer-Policy: no-referrer   ->  "Forbidden."
 //     Referrer-Policy: same-origin   ->  "Check your email"
 //
-// `same-origin` sets `Origin: null` only when the request is already
-// cross-origin, which this site refuses anyway, so the defence is unchanged.
+// **Why not `same-origin` either, which is what the emergency fix shipped.**
+// `same-origin` withholds the Referer from other sites but sends the FULL URL,
+// path and query included, on same-origin requests. The sign-in confirmation
+// page carries the token in its query string, so the live token then rides in
+// the Referer on every same-origin request that page makes, including the POST
+// that spends it and every static asset it pulls. Measured in a real browser
+// on 6 September 2026: after confirming, `document.referrer` on /feed was
+// `http://127.0.0.1:3123/sign-in/verify?token=<the live 43-character token>`.
+// The watch pages carry a supplier key in the same way, and MASTER-DESIGN rule
+// 8 says a watchlist never appears in a log.
+//
+// `strict-origin` sends the origin and nothing else, to anyone: no path, no
+// query, no token, no watch key. It withholds even that on an HTTPS to HTTP
+// downgrade. And in the Fetch standard's Origin step it falls to the
+// "otherwise, do nothing" branch, so the Origin header arrives intact and G28
+// cannot recur. Measured the same way: the form works and
+// `document.referrer` carries no token.
 //
 // The check suite did not catch this, because every check sends its own
 // `Origin` header explicitly, the way `fetch` and `curl` do. Only a browser
 // navigating a real form reproduces it. tests/headers.test.mjs now asserts the
 // policy by name and says why.
 const SECURITY_HEADERS = [
-  { key: 'Referrer-Policy', value: 'same-origin' },
+  { key: 'Referrer-Policy', value: 'strict-origin' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
 ]
 

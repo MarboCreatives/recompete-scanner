@@ -29,6 +29,20 @@ export function isProduction(): boolean {
   return process.env.VERCEL_ENV === 'production'
 }
 
+/** True only on a preview deployment. */
+export function isPreview(): boolean {
+  return process.env.VERCEL_ENV === 'preview'
+}
+
+/**
+ * True when this is not running on the hosting platform at all, which means a
+ * developer's own machine. The platform sets VERCEL on every deployment, so
+ * this cannot be true on production or on a preview.
+ */
+export function isLocalDevelopment(): boolean {
+  return optionalEnv('VERCEL') === undefined
+}
+
 /**
  * Where this deployment is reachable, used to build the link inside a sign-in
  * email. It is never taken from the Host header, because an attacker who can
@@ -40,7 +54,16 @@ export function appUrl(): string {
 
   // On a preview deployment the branch URL is the only address that works, and
   // it is supplied by the platform rather than by the request.
-  const branch = optionalEnv('VERCEL_BRANCH_URL')
+  //
+  // Gated to preview, which GROUND-TRUTH G17 names as the deeper fix and which
+  // was not done at the time. Ungated, this line is what turns a missing
+  // APP_URL on production into a silent catastrophe: the platform always sets
+  // VERCEL_BRANCH_URL, so the throw below can never be reached on a
+  // deployment, and the app quietly decides its origin is the git-branch alias
+  // that nobody browses and that sits behind the platform's login. Every form
+  // then answers a bare 403 with nothing in any log. That is exactly what
+  // happened on 5 September 2026 and it took a curl matrix to find.
+  const branch = isPreview() ? optionalEnv('VERCEL_BRANCH_URL') : undefined
   if (branch) return `https://${branch}`
 
   const local = optionalEnv('PORT') ?? '3000'

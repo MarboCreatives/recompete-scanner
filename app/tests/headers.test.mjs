@@ -17,6 +17,14 @@ import assert from 'node:assert/strict'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000'
 
+/** Why each of these is wrong here, so a future change knows what it is undoing. */
+const bannedBecause = {
+  'no-referrer': 'makes browsers send Origin: null on a form post, so every mutation answers 403 (G28)',
+  'same-origin': 'sends the whole URL on same-origin requests, so the sign-in token rides in the Referer',
+  'unsafe-url': 'sends the whole URL to every site, token included',
+  'no-referrer-when-downgrade': 'sends the whole URL to any other https site, token included',
+}
+
 /** Paths of every kind the app answers with: a page, a redirect, a 404, and a route handler. */
 const CASES = [
   { path: '/', method: 'GET', expect: 200, what: 'a public page' },
@@ -46,14 +54,12 @@ for (const c of CASES) {
     const policy = r.headers.get('referrer-policy')
     assert.equal(
       policy,
-      'same-origin',
-      'Referrer-Policy must be same-origin; a token in a URL would otherwise leak to any site we link to',
+      'strict-origin',
+      'Referrer-Policy must be strict-origin: same-origin would send the whole URL, token and all, on same-origin requests, and no-referrer would make browsers send Origin: null and refuse every form',
     )
-    assert.notEqual(
-      policy,
-      'no-referrer',
-      'no-referrer makes browsers send Origin: null on form posts, and every mutation route refuses those',
-    )
+    for (const banned of ['no-referrer', 'same-origin', 'unsafe-url', 'no-referrer-when-downgrade']) {
+      assert.notEqual(policy, banned, bannedBecause[banned])
+    }
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff')
     assert.equal(r.headers.get('x-powered-by'), null, 'the framework header must be switched off')
   })
