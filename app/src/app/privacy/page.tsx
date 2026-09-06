@@ -32,9 +32,18 @@ export default function PrivacyPage() {
         <strong>Your email address.</strong> It is how you sign in and where alerts will
         be sent. It is the only thing we hold that identifies you.
       </p>
+      {/*
+        This paragraph was rewritten when the watchlist was built. It used to say the
+        list was stored "as reference codes rather than names", which stopped being
+        true the moment a supplier could be watched: a supplier is stored as the
+        published name with capitals, punctuation and words such as Inc removed, and
+        "lumina it" is recognisably a company name. Saying so is the point of the page.
+      */}
       <p>
-        <strong>Your watchlist.</strong> The contracts and companies you choose to
-        follow, stored as reference codes rather than names.
+        <strong>Your watchlist.</strong> The contracts you follow, stored as the
+        published reference number and department code; the suppliers you follow,
+        stored as a simplified form of the supplier name as it appears in the published
+        records; and the date you added each.
       </p>
       <p>
         <strong>Your alert preferences.</strong> How often you want to hear from us, and
