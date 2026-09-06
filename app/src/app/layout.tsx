@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Canadian Recompete Radar",
-  description: "Follow federal contracts and suppliers coming up for renewal.",
+  description: "Follow federal contracts coming up for renewal, and the suppliers who hold them.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
