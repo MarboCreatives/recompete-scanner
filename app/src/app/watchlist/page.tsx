@@ -19,7 +19,11 @@ import {
   SUPPLIER_KEY_NOTE,
   MAX_WATCH_ITEMS,
 } from '@/lib/watch'
-import { supplierPageUrls, NO_SUPPLIER_PAGE_NOTE } from '@/lib/supplier-directory'
+import {
+  supplierPageUrls,
+  NO_SUPPLIER_PAGE_NOTE,
+  SUPPLIER_LINKS_UNAVAILABLE_NOTE,
+} from '@/lib/supplier-directory'
 
 export const dynamic = 'force-dynamic'
 
@@ -74,7 +78,13 @@ export default async function WatchlistPage({
   // usually none. Never throws: a supplier that cannot be resolved is rendered
   // without a link, which is also the correct answer for a supplier the site
   // deliberately publishes no page for.
+  //
+  // `status` matters as much as the map. "This supplier has no page" is a claim
+  // about the world and must not be printed when the truth is that the site
+  // could not be read, which with 200 possible rows would be that false claim
+  // 200 times over. CODING-STANDARDS 4.
   const supplierPages = await supplierPageUrls(vendors.map((r) => r.target_key))
+  const linksUnavailable = supplierPages.status === 'unavailable'
 
   return (
     <main>
@@ -102,13 +112,15 @@ export default async function WatchlistPage({
         <>
           <h2>Suppliers</h2>
           <p className="sb">{SUPPLIER_KEY_NOTE}</p>
+          {linksUnavailable ? <p role="alert">{SUPPLIER_LINKS_UNAVAILABLE_NOTE}</p> : null}
           <ul>
             {vendors.map((r) => (
               <li key={`vendor:${r.target_key}`}>
                 <SupplierRow
                   k={r.target_key}
                   addedOn={r.added_on}
-                  pageUrl={supplierPages.get(r.target_key) ?? null}
+                  pageUrl={supplierPages.urls.get(r.target_key) ?? null}
+                  linksUnavailable={linksUnavailable}
                 />
               </li>
             ))}
@@ -160,10 +172,12 @@ function SupplierRow({
   k,
   addedOn,
   pageUrl,
+  linksUnavailable,
 }: {
   k: string
   addedOn: string
   pageUrl: string | null
+  linksUnavailable: boolean
 }) {
   return (
     <>
@@ -171,7 +185,9 @@ function SupplierRow({
         {pageUrl === null ? k : <a href={pageUrl}>{k}</a>}
       </p>
       <p className="row-meta">Added {addedOn}</p>
-      {pageUrl === null ? <p className="sb">{NO_SUPPLIER_PAGE_NOTE}</p> : null}
+      {pageUrl === null && !linksUnavailable ? (
+        <p className="sb">{NO_SUPPLIER_PAGE_NOTE}</p>
+      ) : null}
       <form method="post" action="/watch/remove" className="quiet">
         <input type="hidden" name="kind" value="vendor" />
         <input type="hidden" name="key" value={k} />
