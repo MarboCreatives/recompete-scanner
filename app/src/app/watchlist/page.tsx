@@ -19,6 +19,7 @@ import {
   SUPPLIER_KEY_NOTE,
   MAX_WATCH_ITEMS,
 } from '@/lib/watch'
+import { supplierPageUrls, NO_SUPPLIER_PAGE_NOTE } from '@/lib/supplier-directory'
 
 export const dynamic = 'force-dynamic'
 
@@ -68,6 +69,13 @@ export default async function WatchlistPage({
   const contracts = rows.filter((r) => r.kind === 'contract')
   const vendors = rows.filter((r) => r.kind === 'vendor')
 
+  // Resolved once for the whole page rather than once per row, so a watchlist
+  // of fifty suppliers still costs at most one request to the public site, and
+  // usually none. Never throws: a supplier that cannot be resolved is rendered
+  // without a link, which is also the correct answer for a supplier the site
+  // deliberately publishes no page for.
+  const supplierPages = await supplierPageUrls(vendors.map((r) => r.target_key))
+
   return (
     <main>
       <p className="eyebrow">Watchlist</p>
@@ -97,7 +105,11 @@ export default async function WatchlistPage({
           <ul>
             {vendors.map((r) => (
               <li key={`vendor:${r.target_key}`}>
-                <SupplierRow k={r.target_key} addedOn={r.added_on} />
+                <SupplierRow
+                  k={r.target_key}
+                  addedOn={r.added_on}
+                  pageUrl={supplierPages.get(r.target_key) ?? null}
+                />
               </li>
             ))}
           </ul>
@@ -134,11 +146,32 @@ function ContractRow({ k, addedOn }: { k: string; addedOn: string }) {
   )
 }
 
-function SupplierRow({ k, addedOn }: { k: string; addedOn: string }) {
+/**
+ * The name is the link, because that is the thing a person points at.
+ *
+ * A supplier with no page on the site keeps the plain heading it had before
+ * and is told why, rather than being given a control that goes nowhere or, in
+ * the earlier version of this idea, a guessed address that returns 404. Most
+ * suppliers in the contract data are below the site's size threshold, and a
+ * private individual has no page at all, so the unlinked row is an ordinary
+ * outcome and has to read like one.
+ */
+function SupplierRow({
+  k,
+  addedOn,
+  pageUrl,
+}: {
+  k: string
+  addedOn: string
+  pageUrl: string | null
+}) {
   return (
     <>
-      <p className="row-key">{k}</p>
+      <p className="row-key">
+        {pageUrl === null ? k : <a href={pageUrl}>{k}</a>}
+      </p>
       <p className="row-meta">Added {addedOn}</p>
+      {pageUrl === null ? <p className="sb">{NO_SUPPLIER_PAGE_NOTE}</p> : null}
       <form method="post" action="/watch/remove" className="quiet">
         <input type="hidden" name="kind" value="vendor" />
         <input type="hidden" name="key" value={k} />
