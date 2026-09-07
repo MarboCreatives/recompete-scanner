@@ -9,15 +9,24 @@ import Link from 'next/link'
 import { isTokenShaped } from '@/lib/tokens'
 import { queryOne, DatabaseError } from '@/lib/db'
 import { DatabaseOutage } from '@/components/database-outage'
+import { parseWatchTarget, RETURNING_TO_WATCH_NOTE } from '@/lib/watch'
 
 export const dynamic = 'force-dynamic'
 
 export default async function VerifyPage({
   searchParams,
 }: {
-  searchParams: Promise<{ token?: string }>
+  // The framework's own shape rather than a narrower one: a repeated parameter
+  // arrives as an array, and parseWatchTarget is what refuses that.
+  searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
-  const { token } = await searchParams
+  const params = await searchParams
+  const token = typeof params.token === 'string' ? params.token : undefined
+
+  // What this person was about to watch when they were sent to sign in.
+  // Re-parsed here rather than trusted, and written back out as two named
+  // fields below, so nothing that would fail validation travels on.
+  const target = parseWatchTarget(params.kind, params.key)
 
   if (!isTokenShaped(token)) {
     return (
@@ -74,8 +83,15 @@ export default async function VerifyPage({
       <h1>Confirm sign in</h1>
       <p>You are about to sign in as {row.email}.</p>
       <p>Only continue if you asked for this link.</p>
+      {target ? <p className="sb">{RETURNING_TO_WATCH_NOTE}</p> : null}
       <form method="post" action="/auth/confirm">
         <input type="hidden" name="token" value={token} />
+        {target ? (
+          <>
+            <input type="hidden" name="kind" value={target.kind} />
+            <input type="hidden" name="key" value={target.key} />
+          </>
+        ) : null}
         <button type="submit">Confirm sign in</button>
       </form>
     </main>

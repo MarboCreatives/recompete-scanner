@@ -38,10 +38,22 @@ export default async function AccountPage({
         stored.
       </p>
 
+      {/*
+        Sign out lives here as well as on the feed. Someone looking to leave
+        goes to the page called "Your account", and until this was added the
+        only button on it deleted the account permanently. Those two intentions
+        must not share a single control, and the quiet styling keeps the loud
+        one loud.
+      */}
+      <form method="post" action="/auth/sign-out" className="quiet">
+        <button type="submit">Sign out</button>
+      </form>
+
       <h2>Delete your account</h2>
 
       <p>
-        This removes your account, your sessions, your watchlist and your preferences.
+        Signing out leaves everything as it is. This is the other thing, and it removes
+        your account, your sessions, your watchlist and your preferences.
         Rows are deleted, not hidden. It cannot be undone, and we cannot restore it for
         you.
       </p>

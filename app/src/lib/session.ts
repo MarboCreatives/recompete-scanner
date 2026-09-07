@@ -13,6 +13,7 @@
 import { cache } from 'react'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { withWatchTarget, type WatchTarget } from './watch'
 import { query, DatabaseError } from './db'
 import { isTokenShaped, hashToken } from './tokens'
 
@@ -91,8 +92,15 @@ export const getCurrentUser = cache(async function getCurrentUser(): Promise<Use
  *
  * Returns the user, or reports an outage so the page can say so plainly, or
  * redirects to the sign-in page when nobody is signed in.
+ *
+ * `returnToWatch` is the thing the person was trying to watch when they were
+ * stopped, and it survives the whole sign-in flow so they are put back where
+ * they were. It is a **parsed** WatchTarget, not a path: a caller cannot hand
+ * this function a destination, so it cannot be turned into an open redirect.
+ * The only address it can produce is `/sign-in` on this origin, with a key that
+ * has already passed `parseWatchTarget`.
  */
-export async function requireUser(): Promise<UserOrOutage> {
+export async function requireUser(returnToWatch?: WatchTarget | null): Promise<UserOrOutage> {
   let user: User | null
   try {
     user = await getCurrentUser()
@@ -104,7 +112,7 @@ export async function requireUser(): Promise<UserOrOutage> {
   }
   // Deliberately outside the try, so redirect()'s own thrown signal is never
   // swallowed by the catch above.
-  if (user === null) redirect('/sign-in')
+  if (user === null) redirect(withWatchTarget('/sign-in', returnToWatch ?? null))
   return { kind: 'user', user }
 }
 

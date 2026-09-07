@@ -165,6 +165,45 @@ export function watchPath(target: WatchTarget): string {
   return `/watch?kind=${encodeURIComponent(target.kind)}&key=${encodeURIComponent(target.key)}`
 }
 
+/**
+ * Carry "what this person was trying to watch" across the sign-in flow.
+ *
+ * Someone presses Watch on recompeteradar.ca, is not signed in, and is sent to
+ * sign in. Without this, the thing they pressed is forgotten: they confirm the
+ * emailed link, land on an empty feed, and have to go back to the site and find
+ * it again. Most people will conclude it did not work.
+ *
+ * **The target is rebuilt at every hop, never echoed.** Each of the four places
+ * this passes through re-reads `kind` and `key` with `parseWatchTarget` and
+ * calls this function or `watchPath` to write them out again, so a value that
+ * would not survive validation cannot travel. That is what stops this becoming
+ * an open redirect: no caller can put an arbitrary destination into it, because
+ * no caller supplies a destination at all. The only paths it can ever produce
+ * are `/sign-in` and `/watch` on this origin.
+ *
+ * A null target returns the path unchanged, which is the ordinary case of
+ * somebody signing in without having pressed Watch first.
+ */
+export function withWatchTarget(path: string, target: WatchTarget | null): string {
+  if (target === null) return path
+  const separator = path.includes('?') ? '&' : '?'
+  return (
+    `${path}${separator}kind=${encodeURIComponent(target.kind)}` +
+    `&key=${encodeURIComponent(target.key)}`
+  )
+}
+
+/**
+ * What the sign-in page says when it knows where the person was going.
+ *
+ * Named rather than written inline because the sign-in page and the confirm
+ * page both show it, and a promise made in two places has to be the same
+ * promise. It says "after you sign in", not "now", because that is when it
+ * happens.
+ */
+export const RETURNING_TO_WATCH_NOTE =
+  'After you sign in we will take you back to what you were about to watch.'
+
 // The empty state lives in src/components/nothing-watched.tsx rather than here,
 // because its second sentence carries a link in the middle and so has to be
 // markup rather than a string. Two pages show it and neither writes it out.

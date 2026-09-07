@@ -10,13 +10,22 @@ import { isTokenShaped, newToken, hashToken } from '@/lib/tokens'
 import { query, queryOne, DatabaseError } from '@/lib/db'
 import { log, errorFacts } from '@/lib/log'
 import { setSessionCookie, SESSION_DAYS } from '@/lib/session'
+import { parseWatchTarget, watchPath, withWatchTarget } from '@/lib/watch'
 
 export async function POST(request: Request): Promise<Response> {
   if (!isSameOrigin(request)) return forbidden()
 
   const form = await request.formData()
+
+  // Parsed before the first exit. The person was promised a return to what they
+  // were about to watch; a link that expired must not also lose that, or asking
+  // for a new one starts them over from the public site.
+  const target = parseWatchTarget(form.get('kind'), form.get('key'))
+  const backToSignIn = (problem: string) =>
+    see(withWatchTarget(`/sign-in?problem=${problem}`, target))
+
   const token = form.get('token')
-  if (!isTokenShaped(token)) return see('/sign-in?problem=expired')
+  if (!isTokenShaped(token)) return backToSignIn('expired')
 
   let email: string
   try {
@@ -30,14 +39,14 @@ export async function POST(request: Request): Promise<Response> {
         returning email`,
       [hashToken(token)],
     )
-    if (!consumed) return see('/sign-in?problem=expired')
+    if (!consumed) return backToSignIn('expired')
     email = consumed.email
   } catch (err) {
     if (err instanceof DatabaseError) {
       // Nothing was burned, so the same link still works once the database is
       // back. That is why this branch says "reach" and the one below does not.
       log({ event: 'sign_in_failed', ...errorFacts(err) })
-      return see('/sign-in?problem=unreachable')
+      return backToSignIn('unreachable')
     }
     throw err
   }
@@ -77,7 +86,7 @@ export async function POST(request: Request): Promise<Response> {
       // The token is already spent, so the honest instruction is to ask for a
       // new link rather than to retry this one.
       log({ event: 'sign_in_failed', ...errorFacts(err) })
-      return see('/sign-in?problem=unavailable')
+      return backToSignIn('unavailable')
     }
     throw err
   }
@@ -86,5 +95,11 @@ export async function POST(request: Request): Promise<Response> {
   // observed to work on 2 September 2026; the Set-Cookie is merged onto the
   // redirect and carries Secure, HttpOnly, SameSite=lax and Path=/.
   await setSessionCookie(rawSession)
-  return see('/feed')
+
+  // Back to what they were about to watch, if that is how they got here. The
+  // address is rebuilt by watchPath from a freshly parsed target, so this
+  // cannot be steered anywhere but /watch on this origin: an unparseable value
+  // yields null and the person lands on the feed, which is where a plain sign
+  // in has always led.
+  return see(target === null ? '/feed' : watchPath(target))
 }
