@@ -14,6 +14,7 @@ import { sendEmail } from '@/lib/email'
 import { signInLinkEmail, SIGN_IN_SUBJECT } from '@/lib/email-templates'
 import { appUrl } from '@/lib/env'
 import { parseWatchTarget, withWatchTarget } from '@/lib/watch'
+import { rememberWatchIntent } from '@/lib/session'
 
 /** Links one address may ask for in an hour. */
 const PER_ADDRESS_HOURLY_CAP = 5
@@ -89,14 +90,17 @@ export async function POST(request: Request): Promise<Response> {
     throw err
   }
 
+  // What they were about to watch is stored in a short-lived cookie on this
+  // device, NOT added to the link. Resend keeps a copy of every message for 30
+  // days, and the account page says so; putting a watchlist item in the link
+  // would put it in that copy, and a watchlist is personal data under
+  // MASTER-DESIGN rule 8. Also cleared here when there is no target, so a plain
+  // sign in cannot inherit an older one.
+  await rememberWatchIntent(target)
+
   // Built from the configured address, never from a request header. Someone who
   // can set the Host header could otherwise point the link at their own site.
-  //
-  // The watch target rides along so that pressing Watch, signing in, and being
-  // put back where you were is one journey rather than two. It is re-parsed
-  // from the form here and written out by withWatchTarget, so a value that
-  // would not survive validation cannot reach the email.
-  const url = withWatchTarget(`${appUrl()}/sign-in/verify?token=${raw}`, target)
+  const url = `${appUrl()}/sign-in/verify?token=${raw}`
   const body = signInLinkEmail(url)
 
   const sent = await sendEmail({

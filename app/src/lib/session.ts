@@ -13,7 +13,7 @@
 import { cache } from 'react'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { withWatchTarget, type WatchTarget } from './watch'
+import { withWatchTarget, parseWatchTarget, type WatchTarget } from './watch'
 import { query, DatabaseError } from './db'
 import { isTokenShaped, hashToken } from './tokens'
 
@@ -50,6 +50,75 @@ export async function setSessionCookie(rawToken: string): Promise<void> {
 export async function clearSessionCookie(): Promise<void> {
   const jar = await cookies()
   jar.set(SESSION_COOKIE, '', cookieOptions(0))
+}
+
+/**
+ * Where somebody was going when they were stopped to sign in.
+ *
+ * A cookie rather than a parameter on the emailed link, and that is a privacy
+ * decision rather than a technical one. Resend keeps a copy of every message it
+ * sends for 30 days, and the account page promises exactly that in those words.
+ * A watch target in the link would put an item from a person's watchlist into
+ * that retained copy, and a watchlist is personal data under MASTER-DESIGN
+ * rule 8. This was written into HANDOFF.md as a decision before it was built,
+ * then broken by the first implementation, then put back.
+ *
+ * The cost is honest and small: the cookie is on the device that asked, so
+ * opening the emailed link on a *different* device loses the target and lands
+ * on the feed, which is where a plain sign in has always led. The case that
+ * matters is a phone, where the mail app and the browser share a cookie jar.
+ *
+ * Twenty minutes because the link itself lasts fifteen, so the cookie outlives
+ * anything that could still use it and not much longer.
+ */
+const WATCH_COOKIE = '__Host-rs_watch'
+const WATCH_COOKIE_SECONDS = 20 * 60
+
+export async function rememberWatchIntent(target: WatchTarget | null): Promise<void> {
+  const jar = await cookies()
+  if (target === null) {
+    // Clear any older intent, so a plain sign in cannot inherit one.
+    jar.set(WATCH_COOKIE, '', cookieOptions(0))
+    return
+  }
+  jar.set(
+    WATCH_COOKIE,
+    `${target.kind}:${encodeURIComponent(target.key)}`,
+    cookieOptions(WATCH_COOKIE_SECONDS),
+  )
+}
+
+/** Read the stored intent without consuming it. For failure paths. */
+export async function peekWatchIntent(): Promise<WatchTarget | null> {
+  return readWatchCookie(await cookies())
+}
+
+function readWatchCookie(jar: Awaited<ReturnType<typeof cookies>>): WatchTarget | null {
+  const raw = jar.get(WATCH_COOKIE)?.value
+  if (typeof raw !== 'string' || raw === '') return null
+  const colon = raw.indexOf(':')
+  if (colon < 0) return null
+  try {
+    return parseWatchTarget(raw.slice(0, colon), decodeURIComponent(raw.slice(colon + 1)))
+  } catch {
+    // decodeURIComponent throws on a malformed sequence. A broken cookie is
+    // simply no intent.
+    return null
+  }
+}
+
+/**
+ * Read and forget the stored intent.
+ *
+ * The value is put back through `parseWatchTarget`, so a cookie somebody edited
+ * by hand is worth no more than one this application wrote. It can only ever
+ * name a `/watch` address on this origin.
+ */
+export async function takeWatchIntent(): Promise<WatchTarget | null> {
+  const jar = await cookies()
+  const target = readWatchCookie(jar)
+  jar.set(WATCH_COOKIE, '', cookieOptions(0))
+  return target
 }
 
 /** The raw cookie value, if it is even the right shape to look up. */

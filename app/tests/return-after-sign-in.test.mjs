@@ -33,6 +33,8 @@ const SERVER_LOG = process.env.SERVER_LOG
 const ADDRESS = 'returner@example.com'
 const ADDRESS_PLAIN = 'plain-returner@example.com'
 const ADDRESS_HOSTILE = 'hostile-returner@example.com'
+const ADDRESS_JOURNEY = 'journey-returner@example.com'
+const ADDRESS_LINK = 'link-returner@example.com'
 
 /** see() builds an absolute URL, so compare where it points, not the string. */
 function redirectPath(response) {
@@ -45,11 +47,15 @@ function redirectPath(response) {
 const TARGET = { kind: 'vendor', key: 'skyalyne' }
 const CONTRACT = { kind: 'contract', key: 'pwgsc-tpsgc,C-2024-2025-Q2-00078' }
 
-async function postForm(path, fields) {
+async function postForm(path, fields, extra = {}) {
   return fetch(`${BASE}${path}`, {
     method: 'POST',
     redirect: 'manual',
-    headers: { 'content-type': 'application/x-www-form-urlencoded', origin: BASE },
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      origin: BASE,
+      ...(extra.cookie ? { cookie: extra.cookie } : {}),
+    },
     body: new URLSearchParams(fields),
   })
 }
@@ -99,11 +105,21 @@ test('a hostile destination cannot be smuggled through the target', () => {
 
 // --- the four hops, over HTTP ----------------------------------------------
 
+/** The value of a Set-Cookie the response wrote, or undefined. */
+function cookieFrom(response, name) {
+  for (const raw of response.headers.getSetCookie?.() ?? []) {
+    const [pair] = raw.split(';')
+    const eq = pair.indexOf('=')
+    if (pair.slice(0, eq).trim() === name) return pair.trim()
+  }
+  return undefined
+}
+
 test('pressing Watch while signed out carries the target to the sign-in page', async () => {
-  const res = await fetch(
-    `${BASE}/watch?kind=vendor&key=skyalyne`,
-    { redirect: 'manual', headers: { origin: BASE } },
-  )
+  const res = await fetch(`${BASE}/watch?kind=vendor&key=skyalyne`, {
+    redirect: 'manual',
+    headers: { origin: BASE },
+  })
   assert.ok(res.status >= 300 && res.status < 400, `expected a redirect, got ${res.status}`)
   const location = res.headers.get('location') ?? ''
   assert.match(location, /\/sign-in\?/, 'must be sent to sign in')
@@ -123,57 +139,73 @@ test('an unparseable target is dropped at the sign-in page rather than carried',
   const html = await (await fetch(`${BASE}/sign-in?kind=vendor&key=%2F%2Fevil.example`)).text()
 
   // Not a blanket search for the string. The framework serialises the route's
-  // own searchParams into its flight payload, JSON-escaped, on every page —
+  // own searchParams into its flight payload, JSON-escaped, on every page -
   // measured, three occurrences, none of them in markup. That is Next echoing
   // the address it was asked for, not this page carrying the value forward.
-  //
-  // What matters is that it reaches no form field, no link, and no promise.
-  assert.ok(
-    !/<input[^>]*evil\.example/.test(html),
-    'a key that failed validation must not become a form field',
-  )
-  assert.ok(
-    !/href="[^"]*evil\.example/.test(html),
-    'a key that failed validation must not become a link',
-  )
+  assert.ok(!/<input[^>]*evil\.example/.test(html), 'must not become a form field')
+  assert.ok(!/href="[^"]*evil\.example/.test(html), 'must not become a link')
   assert.ok(
     !html.includes('take you back to what you were about to watch'),
     'the product must not promise to return somebody to a target it refused',
   )
 })
 
-test('the whole journey ends on the thing that was pressed', async () => {
+test('the emailed link carries a token and nothing about a watchlist', async () => {
+  // The privacy decision this flow is built around. Resend keeps a copy of every
+  // message for 30 days, and the account page promises exactly that. A watch
+  // target in the link would put a watchlist item into that retained copy, and a
+  // watchlist is personal data under MASTER-DESIGN rule 8. The first
+  // implementation of this feature put it in the link; this is the check that
+  // stops it coming back.
   await withDatabase(async () => {
     const asked = await postForm('/auth/request', {
-      email: ADDRESS,
+      email: ADDRESS_LINK,
       kind: 'vendor',
       key: 'skyalyne',
     })
     assert.equal(asked.status, 303)
+
+    const link = latestLink()
+    const params = new URL(link).searchParams
+    assert.ok(params.get('token'), 'the link must carry a token')
+    assert.equal(params.get('kind'), null, 'the link must not name what was watched')
+    assert.equal(params.get('key'), null, 'the link must not name what was watched')
+    assert.ok(!link.includes('skyalyne'), `the key must not appear anywhere in ${link}`)
+
+    // It is on the device that asked instead.
+    const jar = cookieFrom(asked, '__Host-rs_watch')
+    assert.ok(jar, 'the intent must be stored on the device that asked')
+    assert.match(jar, /vendor/)
+  })
+})
+
+test('the whole journey ends on the thing that was pressed', async () => {
+  await withDatabase(async () => {
+    const asked = await postForm('/auth/request', {
+      email: ADDRESS_JOURNEY,
+      kind: 'contract',
+      key: 'pwgsc-tpsgc,C-2024-2025-Q2-00078',
+    })
+    assert.equal(asked.status, 303)
     assert.equal(redirectPath(asked), '/sign-in/sent')
 
-    // The emailed link itself must carry it, or opening the link in a different
-    // browser from the one that asked would lose the target.
-    const link = latestLink()
-    const linkQuery = new URL(link).searchParams
-    assert.equal(linkQuery.get('kind'), 'vendor', `link was ${link}`)
-    assert.equal(linkQuery.get('key'), 'skyalyne')
+    const cookie = cookieFrom(asked, '__Host-rs_watch')
+    assert.ok(cookie, 'no intent cookie was set')
 
-    // The confirm page hands it to the form it renders.
-    const verifyHtml = await (await fetch(link)).text()
-    assert.match(verifyHtml, /name="kind"[^>]*value="vendor"|value="vendor"[^>]*name="kind"/)
-    assert.match(verifyHtml, /name="key"[^>]*value="skyalyne"|value="skyalyne"[^>]*name="key"/)
-
-    const confirmed = await postForm('/auth/confirm', {
-      token: linkQuery.get('token'),
-      kind: 'vendor',
-      key: 'skyalyne',
-    })
+    const token = new URL(latestLink()).searchParams.get('token')
+    const confirmed = await postForm('/auth/confirm', { token }, { cookie })
     assert.equal(confirmed.status, 303)
     assert.equal(
       redirectPath(confirmed),
-      '/watch?kind=vendor&key=skyalyne',
+      '/watch?kind=contract&key=pwgsc-tpsgc%2CC-2024-2025-Q2-00078',
       'signing in must return the person to what they pressed, not to the feed',
+    )
+
+    // And the intent is spent, so a later sign in cannot inherit it.
+    assert.equal(
+      cookieFrom(confirmed, '__Host-rs_watch'),
+      '__Host-rs_watch=',
+      'the intent must be cleared once used',
     )
   })
 })
@@ -189,22 +221,24 @@ test('signing in without pressing Watch still lands on the feed', async () => {
   })
 })
 
-test('a hostile target at the last hop lands on the feed, not off this site', async () => {
-  // The one that matters. If confirm ever echoed what it was given, this is
-  // where an attacker would send somebody after they signed in.
+test('a hostile intent cookie cannot steer the redirect off this site', async () => {
+  // The cookie is httpOnly, so this is not a shape a page can produce. It is
+  // what somebody with the browser in their hands could set, and the answer has
+  // to be the same: the value is re-parsed on the way out and can only ever
+  // name /watch on this origin.
   await withDatabase(async () => {
-    for (const key of ['//evil.example', 'https://evil.example', '../../evil']) {
+    for (const value of [
+      '__Host-rs_watch=vendor:%2F%2Fevil.example',
+      '__Host-rs_watch=vendor:https%3A%2F%2Fevil.example',
+      '__Host-rs_watch=https://evil.example',
+      '__Host-rs_watch=vendor:%E0%A4%A',
+    ]) {
       const asked = await postForm('/auth/request', { email: ADDRESS_HOSTILE })
       assert.equal(asked.status, 303)
       const token = new URL(latestLink()).searchParams.get('token')
-
-      const confirmed = await postForm('/auth/confirm', { token, kind: 'vendor', key })
+      const confirmed = await postForm('/auth/confirm', { token }, { cookie: value })
       assert.equal(confirmed.status, 303)
-      assert.equal(
-        redirectPath(confirmed),
-        '/feed',
-        `a key of ${key} must not steer the redirect`,
-      )
+      assert.equal(redirectPath(confirmed), '/feed', `${value} must not steer the redirect`)
     }
   })
 })
@@ -212,9 +246,8 @@ test('a hostile target at the last hop lands on the feed, not off this site', as
 test('a failure on the way keeps the target, so the promise is not quietly broken', async () => {
   // The sign-in page has already said "we will take you back to what you were
   // about to watch". Every exit from /auth/request and /auth/confirm returns to
-  // that page, and if the target were dropped on the way the promise would be
-  // silently withdrawn: the person would sign in successfully and land on an
-  // empty feed. At first only the happy path carried it.
+  // that page, and if the target were dropped the promise would be silently
+  // withdrawn. At first only the happy path carried it.
   const rejected = await postForm('/auth/request', {
     email: 'not-an-address',
     kind: 'vendor',
@@ -224,25 +257,32 @@ test('a failure on the way keeps the target, so the promise is not quietly broke
   const back = new URL(redirectPath(rejected), BASE)
   assert.equal(back.pathname, '/sign-in')
   assert.equal(back.searchParams.get('problem'), 'address')
-  assert.equal(back.searchParams.get('kind'), 'vendor')
   assert.equal(back.searchParams.get('key'), 'skyalyne')
 
-  // And an expired link, which is the failure a tester is most likely to meet.
-  const expired = await postForm('/auth/confirm', {
-    token: 'x'.repeat(43),
-    kind: 'vendor',
-    key: 'skyalyne',
-  })
+  // An expired link is the failure a tester is most likely to meet. Here the
+  // intent comes from the cookie, and must survive rather than be consumed.
+  const expired = await postForm(
+    '/auth/confirm',
+    { token: 'x'.repeat(43) },
+    { cookie: '__Host-rs_watch=vendor:skyalyne' },
+  )
   assert.equal(expired.status, 303)
   const again = new URL(redirectPath(expired), BASE)
   assert.equal(again.searchParams.get('problem'), 'expired')
   assert.equal(again.searchParams.get('key'), 'skyalyne')
+
+  // And the intent must SURVIVE the failure. Asserting the redirect alone does
+  // not test this: reading the cookie and consuming it produce an identical
+  // Location, so a failure path that spent the intent looked correct. The break
+  // harness caught that. What differs is whether the response clears the cookie.
+  assert.notEqual(
+    cookieFrom(expired, '__Host-rs_watch'),
+    '__Host-rs_watch=',
+    'a failed confirmation must not spend the intent; the retry still needs it',
+  )
 })
 
 test('the check-your-email page says what to look for and where', async () => {
-  // This is the one moment a person leaves the product to hunt in a mail
-  // client, and a first message from an unfamiliar sender is exactly what a
-  // spam filter holds. Naming the subject and the folder costs one sentence.
   const html = await (await fetch(`${BASE}/sign-in/sent`)).text()
   assert.match(html, /Your sign-in link/, 'the subject line must be named')
   assert.match(html, /spam/i, 'the spam folder must be mentioned')

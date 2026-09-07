@@ -9,20 +9,27 @@ import { isSameOrigin } from '@/lib/same-origin'
 import { isTokenShaped, newToken, hashToken } from '@/lib/tokens'
 import { query, queryOne, DatabaseError } from '@/lib/db'
 import { log, errorFacts } from '@/lib/log'
-import { setSessionCookie, SESSION_DAYS } from '@/lib/session'
-import { parseWatchTarget, watchPath, withWatchTarget } from '@/lib/watch'
+import {
+  setSessionCookie,
+  SESSION_DAYS,
+  takeWatchIntent,
+  peekWatchIntent,
+} from '@/lib/session'
+import { watchPath, withWatchTarget } from '@/lib/watch'
 
 export async function POST(request: Request): Promise<Response> {
   if (!isSameOrigin(request)) return forbidden()
 
   const form = await request.formData()
 
-  // Parsed before the first exit. The person was promised a return to what they
-  // were about to watch; a link that expired must not also lose that, or asking
-  // for a new one starts them over from the public site.
-  const target = parseWatchTarget(form.get('kind'), form.get('key'))
+  // Read before the first exit, and NOT consumed. The person was promised a
+  // return to what they were about to watch; a link that expired must not also
+  // lose that, or asking for a new one starts them over from the public site.
+  // It goes back onto the sign-in address so that page repopulates its form and
+  // the next request stores the intent again.
+  const intent = await peekWatchIntent()
   const backToSignIn = (problem: string) =>
-    see(withWatchTarget(`/sign-in?problem=${problem}`, target))
+    see(withWatchTarget(`/sign-in?problem=${problem}`, intent))
 
   const token = form.get('token')
   if (!isTokenShaped(token)) return backToSignIn('expired')
@@ -96,10 +103,12 @@ export async function POST(request: Request): Promise<Response> {
   // redirect and carries Secure, HttpOnly, SameSite=lax and Path=/.
   await setSessionCookie(rawSession)
 
-  // Back to what they were about to watch, if that is how they got here. The
-  // address is rebuilt by watchPath from a freshly parsed target, so this
-  // cannot be steered anywhere but /watch on this origin: an unparseable value
-  // yields null and the person lands on the feed, which is where a plain sign
+  // Back to what they were about to watch. The intent comes from the cookie set
+  // when the link was requested, not from this form and not from the link, so
+  // nothing about a watchlist reaches the copy Resend keeps. It is re-parsed on
+  // the way out, so the address can only ever be /watch on this origin; an
+  // unparseable or absent value lands on the feed, which is where a plain sign
   // in has always led.
-  return see(target === null ? '/feed' : watchPath(target))
+  await takeWatchIntent()
+  return see(intent === null ? '/feed' : watchPath(intent))
 }

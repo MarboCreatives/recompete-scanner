@@ -9,7 +9,6 @@ import Link from 'next/link'
 import { isTokenShaped } from '@/lib/tokens'
 import { queryOne, DatabaseError } from '@/lib/db'
 import { DatabaseOutage } from '@/components/database-outage'
-import { parseWatchTarget, RETURNING_TO_WATCH_NOTE } from '@/lib/watch'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,10 +22,10 @@ export default async function VerifyPage({
   const params = await searchParams
   const token = typeof params.token === 'string' ? params.token : undefined
 
-  // What this person was about to watch when they were sent to sign in.
-  // Re-parsed here rather than trusted, and written back out as two named
-  // fields below, so nothing that would fail validation travels on.
-  const target = parseWatchTarget(params.kind, params.key)
+  // Nothing about a watch target appears here. The emailed link carries only a
+  // token, on purpose: Resend keeps a copy of every message for 30 days, and a
+  // watchlist item must not be in it. The intent is in a cookie on the device
+  // that asked. See rememberWatchIntent in src/lib/session.ts.
 
   if (!isTokenShaped(token)) {
     return (
@@ -83,15 +82,8 @@ export default async function VerifyPage({
       <h1>Confirm sign in</h1>
       <p>You are about to sign in as {row.email}.</p>
       <p>Only continue if you asked for this link.</p>
-      {target ? <p className="sb">{RETURNING_TO_WATCH_NOTE}</p> : null}
       <form method="post" action="/auth/confirm">
         <input type="hidden" name="token" value={token} />
-        {target ? (
-          <>
-            <input type="hidden" name="kind" value={target.kind} />
-            <input type="hidden" name="key" value={target.key} />
-          </>
-        ) : null}
         <button type="submit">Confirm sign in</button>
       </form>
     </main>
