@@ -1,8 +1,15 @@
 // POST /auth/request — someone asks for a sign-in link.
 //
-// No user row is ever consulted here, so the response is the same whether or
-// not an account exists. There is no way to use this route to learn who has
-// signed up.
+// No user row is ever consulted here, so the response never says whether an
+// account exists, and this route cannot be used to learn who has signed up.
+//
+// It does now say whether an address was INVITED, which is a different fact and
+// a smaller one. The invited list is who was asked to test, not who has an
+// account; a refused address may or may not have one, and an invited address
+// that has never signed in gets the same page as one that has. That disclosure
+// is accepted deliberately for a closed test, because the alternative is a page
+// that claims to have sent a link it will never send, leaving somebody waiting
+// for mail that cannot arrive. It goes when the gate goes; see lib/invited.ts.
 
 import { see, forbidden } from '@/lib/http'
 import { isSameOrigin } from '@/lib/same-origin'
@@ -13,6 +20,7 @@ import { log, errorFacts } from '@/lib/log'
 import { sendEmail } from '@/lib/email'
 import { signInLinkEmail, SIGN_IN_SUBJECT } from '@/lib/email-templates'
 import { appUrl } from '@/lib/env'
+import { isInvited } from '@/lib/invited'
 import { parseWatchTarget, parseWatchLabels, withWatchTarget } from '@/lib/watch'
 import { rememberWatchIntent } from '@/lib/session'
 
@@ -63,6 +71,19 @@ export async function POST(request: Request): Promise<Response> {
   // and swallowing a typo would produce a confident "check your inbox" for a
   // message that could never arrive.
   if (email === null) return backToSignIn('address')
+
+  // The gate for the closed test. Its position is the point, not a detail: an
+  // uninvited attempt must reach neither the database nor either cap count.
+  //
+  // The global hourly cap is charged by failed sends by design. If this check
+  // ran after it, a stranger holding down the button on this form could close
+  // sign-in for the four testers and for Jon for the rest of the hour, without
+  // ever having been invited. Below the gate, an uninvited attempt costs one
+  // string comparison and writes nothing.
+  //
+  // One call site. Delete this and its import when the product starts charging;
+  // the reasoning and the rest of it are in lib/invited.ts.
+  if (!isInvited(email)) return backToSignIn('not-invited')
 
   let raw: string
   let hash: string
