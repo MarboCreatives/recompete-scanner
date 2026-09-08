@@ -15,7 +15,7 @@ import {
   takeWatchIntent,
   peekWatchIntent,
 } from '@/lib/session'
-import { watchPath, withWatchTarget } from '@/lib/watch'
+import { watchPath, withWatchTarget, NO_LABELS } from '@/lib/watch'
 
 export async function POST(request: Request): Promise<Response> {
   if (!isSameOrigin(request)) return forbidden()
@@ -29,7 +29,13 @@ export async function POST(request: Request): Promise<Response> {
   // the next request stores the intent again.
   const intent = await peekWatchIntent()
   const backToSignIn = (problem: string) =>
-    see(withWatchTarget(`/sign-in?problem=${problem}`, intent))
+    see(
+      withWatchTarget(
+        `/sign-in?problem=${problem}`,
+        intent?.target ?? null,
+        intent?.labels ?? NO_LABELS,
+      ),
+    )
 
   const token = form.get('token')
   if (!isTokenShaped(token)) return backToSignIn('expired')
@@ -110,5 +116,5 @@ export async function POST(request: Request): Promise<Response> {
   // unparseable or absent value lands on the feed, which is where a plain sign
   // in has always led.
   await takeWatchIntent()
-  return see(intent === null ? '/feed' : watchPath(intent))
+  return see(intent === null ? '/feed' : watchPath(intent.target, intent.labels))
 }

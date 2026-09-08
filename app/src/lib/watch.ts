@@ -59,6 +59,29 @@
 export type WatchKind = 'contract' | 'vendor'
 
 export type WatchTarget = { kind: WatchKind; key: string }
+/**
+ * The caption on a watched contract: who the supplier is, and which department.
+ *
+ * **This is not identity and must never be used as any.** `WatchTarget` is
+ * identity; this is what a row says on screen. They are two types rather than
+ * four fields on one type precisely so that nothing can drift into looking a
+ * row up by its caption: every function that identifies a watch item takes a
+ * `WatchTarget` and cannot be handed one of these by mistake.
+ *
+ * Both halves are optional and were absent until 0003_watch_labels.sql. Every
+ * row written before it has neither, and a Watch link can arrive without them
+ * from an old bookmark or a hand-typed address.
+ *
+ * The values are CALLER-CONTROLLED. They arrive as `&name=` and `&dept=` on a
+ * URL, so anyone can put anything in them. They reach nobody but the one person
+ * whose watchlist it is, which makes the blast radius one screen, but they are
+ * still capped here and escaped on output.
+ */
+export type WatchLabels = { name: string | null; dept: string | null }
+
+/** Neither label known. What a caller passes when there is nothing to say. */
+export const NO_LABELS: WatchLabels = { name: null, dept: null }
+
 
 /**
  * The most a single person may watch.
@@ -140,6 +163,79 @@ export function parseWatchTarget(kind: unknown, key: unknown): WatchTarget | nul
   return { kind, key }
 }
 
+/**
+ * The most a stored label may be. Matches the CHECK constraints added in
+ * 0003_watch_labels.sql; tests/watch-labels.test.mjs asserts the two agree by
+ * writing a value of exactly this length to the real database, rather than by
+ * trusting this sentence.
+ *
+ * Two hundred is a safety limit, not a working one. The longest vendor_key over
+ * 25,208 live contracts was 101 characters and the longest department name is
+ * far shorter, so nothing real is ever truncated by it.
+ */
+export const MAX_LABEL_LENGTH = 200
+
+/**
+ * Turn whatever arrived as `&name=` and `&dept=` into the caption for a row.
+ *
+ * Never returns null and never throws: a label that cannot be used is simply
+ * absent, and the watchlist has a sentence for an absent one. A parse that
+ * could fail would make an unreadable caption able to stop somebody watching a
+ * contract, which is the wrong trade in every case.
+ *
+ * `kind` is taken so that the contract-only rule is enforced in one place
+ * rather than remembered by each of the five callers. A supplier is identified
+ * by its vendor_key, which already IS its display name; a second name for it
+ * could only ever disagree with the first. The same rule is a CHECK constraint
+ * in the database, because a rule that lives only here is not a rule.
+ */
+export function parseWatchLabels(kind: unknown, name: unknown, dept: unknown): WatchLabels {
+  if (kind !== 'contract') return NO_LABELS
+  return { name: cleanLabel(name), dept: cleanLabel(dept) }
+}
+
+/**
+ * One label, made safe to store and print, or null.
+ *
+ * Three things happen here and each is load-bearing:
+ *
+ *  1. **Control and format characters go.** `\p{Cc}` is the C0/C1 controls, so a
+ *     newline cannot break a one-line caption into two. `\p{Cf}` is the format
+ *     characters, which matters more than it looks: U+202E RIGHT-TO-LEFT
+ *     OVERRIDE reverses everything printed after it, so a label carrying one
+ *     could make a row read as a supplier it is not. Runs of these and of
+ *     ordinary whitespace collapse to a single space.
+ *  2. **Empty becomes null**, so `&name=` with nothing after it is the same as
+ *     no parameter at all rather than a caption that prints as a blank line.
+ *  3. **The cap is applied last**, and a trailing lone surrogate is removed
+ *     after it. Cutting a string at a fixed number of UTF-16 units can split a
+ *     surrogate pair, and Postgres refuses a lone surrogate as an invalid byte
+ *     sequence, which would be a 500 on insert rather than a shortened caption.
+ *     Slicing by UTF-16 units also cannot exceed the constraint's count of
+ *     characters, because a code point is never fewer than one unit.
+ *
+ * Escaping is NOT done here. React escapes text children by default, and a
+ * value escaped twice prints its own entities.
+ */
+function cleanLabel(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const collapsed = value.replace(/[\p{Cc}\p{Cf}\s]+/gu, ' ').trim()
+  if (collapsed === '') return null
+  const capped = collapsed.slice(0, MAX_LABEL_LENGTH).replace(/[\uD800-\uDBFF]$/, '').trim()
+  return capped === '' ? null : capped
+}
+
+/** The query-string half of a watch address: the target, then any labels. */
+function watchQuery(target: WatchTarget, labels: WatchLabels): string {
+  let q = `kind=${encodeURIComponent(target.kind)}&key=${encodeURIComponent(target.key)}`
+  // Re-cleaned rather than trusted, for the same reason the target is re-parsed
+  // at every hop: nothing is written onward that has not just been validated.
+  const { name, dept } = parseWatchLabels(target.kind, labels.name, labels.dept)
+  if (name !== null) q += `&name=${encodeURIComponent(name)}`
+  if (dept !== null) q += `&dept=${encodeURIComponent(dept)}`
+  return q
+}
+
 /** The two halves of a contract key. Call only with a key parseWatchTarget accepted. */
 export function splitContractKey(key: string): { org: string; reference: string } {
   const comma = key.indexOf(',')
@@ -160,9 +256,16 @@ export function governmentRecordUrl(key: string): string {
   return `https://search.open.canada.ca/contracts/record/${encodeURIComponent(org)}%2C${encodeURIComponent(reference)}`
 }
 
-/** The address of the page that offers to watch one thing. */
-export function watchPath(target: WatchTarget): string {
-  return `/watch?kind=${encodeURIComponent(target.kind)}&key=${encodeURIComponent(target.key)}`
+/**
+ * The address of the page that offers to watch one thing.
+ *
+ * Labels ride along so that a person who signed in on the way here still sees
+ * which supplier the contract belongs to when they arrive. They default to
+ * none, which is what a caller with nothing to say passes and what every caller
+ * passed before labels existed.
+ */
+export function watchPath(target: WatchTarget, labels: WatchLabels = NO_LABELS): string {
+  return `/watch?${watchQuery(target, labels)}`
 }
 
 /**
@@ -184,13 +287,14 @@ export function watchPath(target: WatchTarget): string {
  * A null target returns the path unchanged, which is the ordinary case of
  * somebody signing in without having pressed Watch first.
  */
-export function withWatchTarget(path: string, target: WatchTarget | null): string {
+export function withWatchTarget(
+  path: string,
+  target: WatchTarget | null,
+  labels: WatchLabels = NO_LABELS,
+): string {
   if (target === null) return path
   const separator = path.includes('?') ? '&' : '?'
-  return (
-    `${path}${separator}kind=${encodeURIComponent(target.kind)}` +
-    `&key=${encodeURIComponent(target.key)}`
-  )
+  return `${path}${separator}${watchQuery(target, labels)}`
 }
 
 /**
@@ -217,6 +321,38 @@ export const RETURNING_TO_WATCH_NOTE =
  */
 export const WATCH_EXPLAINER =
   'This saves it to your watchlist. Nothing is sent to you yet; alerts are not switched on in this release.'
+
+/**
+ * What a watched contract says when no supplier name was stored with it.
+ *
+ * Two rows get this: every row saved before 0003_watch_labels.sql, and any row
+ * added from a Watch link that carried no `&name=` — an old bookmark, or a
+ * hand-typed address. There is nothing to backfill from, because this
+ * application holds no contract data until the scanner lands at M2.
+ *
+ * It says what to do rather than only what is missing, and the instruction
+ * works: pressing Watch again from the site fills the label in on the existing
+ * row rather than refusing as a duplicate. See the insert in /watch/add.
+ *
+ * The name is not guessed from the reference number and must not be. There is
+ * nothing in this application to guess from, and a guessed supplier name on a
+ * contract somebody is watching would be worse than an absent one.
+ */
+export const NO_CONTRACT_LABEL_NOTE =
+  'No supplier name was saved with this one. Press Watch on it again from recompeteradar.ca, and you will be offered the name to add.'
+
+/**
+ * What the watch page says to somebody already watching a contract, arriving
+ * from a link that carries a supplier name their saved row does not have.
+ *
+ * This exists because the sentence above was a lie for two hours. It told
+ * people to press Watch again, and pressing Watch again landed them on a page
+ * that said "You are already watching this" and offered only Stop watching:
+ * there was no way to accept the name. The tests did not catch it because they
+ * post to /watch/add directly; opening the page in a browser did.
+ */
+export const ADD_NAME_OFFER =
+  'This came with a supplier name, and the copy you saved has none. Adding it changes nothing else about what you follow.'
 
 /**
  * What a supplier key is, said in plain words wherever one is shown.
