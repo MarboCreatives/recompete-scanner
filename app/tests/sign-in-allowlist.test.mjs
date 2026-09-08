@@ -330,16 +330,46 @@ test('the notice is shown to somebody who pressed Watch and was stopped here', a
   assert.ok(visibleText(html).includes(NOTICE))
 })
 
-test('the notice and the refusal are different sentences, neither inside the other', async () => {
+test('the notice and the refusal are different sentences, neither inside the other', () => {
   // The page's own rule: no sentence it shows is a substring of another, so a
   // check asserting one is present cannot be satisfied by a different one.
   assert.ok(!REFUSAL_SENTENCE.includes(NOTICE))
   assert.ok(!NOTICE.includes(REFUSAL_SENTENCE))
+})
 
-  const refused = await (
-    await fetch(`${BASE}/sign-in?problem=${REFUSED}`)
-  ).text()
-  const text = visibleText(refused)
+test('the refused page says it once, not twice', async () => {
+  // Both sentences mean "sign in is closed to invited testers". One above the
+  // other, they read as the page repeating itself, which is what the refusal
+  // page did until 8 September. The refusal is the more specific of the two and
+  // it is the one that stays.
+  const text = visibleText(
+    await (await fetch(`${BASE}/sign-in?problem=${REFUSED}`)).text(),
+  )
   assert.ok(text.includes(REFUSAL_SENTENCE), 'the refusal sentence must be shown')
-  assert.ok(text.includes(NOTICE), 'and the standing notice stays alongside it')
+  assert.ok(
+    !text.includes(NOTICE),
+    'the standing notice must stand down, or the page says the same thing twice',
+  )
+})
+
+test('the notice stands down for that refusal and for nothing else', async () => {
+  // Without this, hiding the notice on EVERY problem page would satisfy the
+  // check above while quietly taking it off pages that still need it. Each
+  // problem below is about something going wrong; none of them explains why
+  // sign in is closed at all, so the notice is still the only thing that does.
+  const others = ['expired', 'too-many', 'address', 'email']
+  assert.ok(others.length > 0, 'an empty list here would prove nothing')
+
+  let checked = 0
+  for (const other of others) {
+    const text = visibleText(
+      await (await fetch(`${BASE}/sign-in?problem=${other}`)).text(),
+    )
+    assert.ok(
+      text.includes(NOTICE),
+      `the standing notice must survive problem=${other}`,
+    )
+    checked += 1
+  }
+  assert.equal(checked, others.length, 'every problem in the list must be tried')
 })
