@@ -116,6 +116,22 @@ test('a real send makes one POST carrying the key, the idempotency key and the m
     assert.match(req.headers['content-type'], /application\/json/)
 
     assert.equal(req.body.from, 'Recompete Scanner <notifications@example.test>')
+
+    // The From address lives on the verified sending subdomain, which has no MX
+    // record — measured 8 September 2026 — so a reply to it bounces. A tester
+    // replying to the first message this product ever sends them is an ordinary
+    // thing to do, and there is no other way to reach anybody from inside the
+    // product. This routes replies to the apex, which has mail forwarding.
+    //
+    // Written out rather than imported from email-templates.ts, because a check
+    // that asks the code under test for the right answer cannot notice the code
+    // being wrong. CODING-STANDARDS 2.4.
+    assert.equal(
+      req.body.reply_to,
+      'hello@recompeteradar.ca',
+      'a reply must reach a mailbox that exists',
+    )
+
     assert.deepEqual(req.body.to, [ADDRESS], 'the recipient is sent as an array')
     assert.equal(req.body.subject, MESSAGE.subject)
     assert.equal(req.body.text, MESSAGE.text)
