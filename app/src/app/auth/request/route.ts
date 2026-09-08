@@ -18,8 +18,26 @@ import { rememberWatchIntent } from '@/lib/session'
 
 /** Links one address may ask for in an hour. */
 const PER_ADDRESS_HOURLY_CAP = 5
-/** Links the whole site may send in an hour. */
-const GLOBAL_HOURLY_CAP = 20
+
+/**
+ * Links the whole site may send in an hour.
+ *
+ * Sixty, raised from twenty on 7 September 2026 when four testers were about to
+ * be invited. Twenty is what four people asking for five links each comes to
+ * exactly, and a failed send charges the cap by design, so one person fumbling
+ * a link could have closed sign-in for everybody, Jon included, for the rest of
+ * the hour. That is a bad first impression bought for nothing.
+ *
+ * It is the per-address cap that does the anti-abuse work: a script has to find
+ * a new address for every five attempts. This one exists to bound the damage
+ * when it does, and to protect the sending quota. Sixty is still far below any
+ * plausible real load, because the product has five users.
+ *
+ * Raise it again when there are more people than that, and lower it if it is
+ * ever reached without a good reason. `sign_in_global_cap_reached` in the logs
+ * is how you would know; nothing else reports it.
+ */
+const GLOBAL_HOURLY_CAP = 60
 
 export async function POST(request: Request): Promise<Response> {
   if (!isSameOrigin(request)) return forbidden()

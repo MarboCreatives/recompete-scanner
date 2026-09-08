@@ -30,7 +30,6 @@ const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000'
 const SERVER_LOG = process.env.SERVER_LOG
 // A separate address per case: the per-address cap is five links an hour,
 // and a shared address would make a later case fail for the wrong reason.
-const ADDRESS = 'returner@example.com'
 const ADDRESS_PLAIN = 'plain-returner@example.com'
 const ADDRESS_HOSTILE = 'hostile-returner@example.com'
 const ADDRESS_JOURNEY = 'journey-returner@example.com'
