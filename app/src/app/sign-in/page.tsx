@@ -40,6 +40,13 @@ export default async function SignInPage({
   const problem = typeof params.problem === 'string' ? params.problem : undefined
   const message = problem ? PROBLEMS[problem] : undefined
 
+  // The standing notice and the refusal carry the same meaning in different
+  // words, so showing both makes the page read as though it is repeating
+  // itself. The notice stands down for the one problem that already says what
+  // it says, and for no other: every other sentence here is about something
+  // going wrong, and none of them explains why sign in is closed at all.
+  const showInvitedNotice = problem !== 'not-invited'
+
   // Somebody who pressed Watch and was stopped here. Re-parsed rather than
   // trusted, and written back out below as two named fields, so nothing that
   // would fail validation can travel any further.
@@ -56,14 +63,15 @@ export default async function SignInPage({
       {message ? <p role="alert">{message}</p> : null}
 
       {/*
-        Above the address field, and shown to everyone, because the point is to
-        be read BEFORE anyone types. Letting a visitor enter an address, wait,
-        and only then be refused is the thing this avoids. It is not conditional
-        on INVITED_EMAILS being set: the gate fails closed, so an unset variable
-        is the gate refusing everybody rather than the gate switched off. See
-        INVITED_ONLY_NOTICE.
+        Above the address field, because the point is to be read BEFORE anyone
+        types. Letting a visitor enter an address, wait, and only then be
+        refused is the thing this avoids. It is not conditional on
+        INVITED_EMAILS being set: the gate fails closed, so an unset variable is
+        the gate refusing everybody rather than the gate switched off. The one
+        time it is withheld is when the refusal above has already said it; see
+        showInvitedNotice and INVITED_ONLY_NOTICE.
       */}
-      <p role="note">{INVITED_ONLY_NOTICE}</p>
+      {showInvitedNotice ? <p role="note">{INVITED_ONLY_NOTICE}</p> : null}
 
       <p>
         Enter your email address and we will send you a link. There is no password to
