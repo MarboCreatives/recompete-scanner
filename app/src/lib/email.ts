@@ -7,6 +7,7 @@
 
 import { optionalEnv, requireEnv, emailDryRun, isProduction } from './env'
 import { log } from './log'
+import { CONTACT_ADDRESS } from './email-templates'
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails'
 
@@ -70,6 +71,11 @@ export async function sendEmail(args: SendArgs): Promise<SendResult> {
       },
       body: JSON.stringify({
         from,
+        // The From address is on the verified sending subdomain, which has no
+        // MX record, so a reply to it would bounce. This sends replies to the
+        // contact address on the apex, which has mail forwarding. Same address
+        // the footer prints, declared once in email-templates.ts.
+        reply_to: CONTACT_ADDRESS,
         to: [args.to],
         subject: args.subject,
         text: args.text,

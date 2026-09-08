@@ -19,6 +19,11 @@ import {
   SUPPLIER_KEY_NOTE,
   MAX_WATCH_ITEMS,
 } from '@/lib/watch'
+import {
+  supplierPageUrls,
+  NO_SUPPLIER_PAGE_NOTE,
+  SUPPLIER_LINKS_UNAVAILABLE_NOTE,
+} from '@/lib/supplier-directory'
 
 export const dynamic = 'force-dynamic'
 
@@ -68,6 +73,19 @@ export default async function WatchlistPage({
   const contracts = rows.filter((r) => r.kind === 'contract')
   const vendors = rows.filter((r) => r.kind === 'vendor')
 
+  // Resolved once for the whole page rather than once per row, so a watchlist
+  // of fifty suppliers still costs at most one request to the public site, and
+  // usually none. Never throws: a supplier that cannot be resolved is rendered
+  // without a link, which is also the correct answer for a supplier the site
+  // deliberately publishes no page for.
+  //
+  // `status` matters as much as the map. "This supplier has no page" is a claim
+  // about the world and must not be printed when the truth is that the site
+  // could not be read, which with 200 possible rows would be that false claim
+  // 200 times over. CODING-STANDARDS 4.
+  const supplierPages = await supplierPageUrls(vendors.map((r) => r.target_key))
+  const linksUnavailable = supplierPages.status === 'unavailable'
+
   return (
     <main>
       <p className="eyebrow">Watchlist</p>
@@ -94,10 +112,16 @@ export default async function WatchlistPage({
         <>
           <h2>Suppliers</h2>
           <p className="sb">{SUPPLIER_KEY_NOTE}</p>
+          {linksUnavailable ? <p role="alert">{SUPPLIER_LINKS_UNAVAILABLE_NOTE}</p> : null}
           <ul>
             {vendors.map((r) => (
               <li key={`vendor:${r.target_key}`}>
-                <SupplierRow k={r.target_key} addedOn={r.added_on} />
+                <SupplierRow
+                  k={r.target_key}
+                  addedOn={r.added_on}
+                  pageUrl={supplierPages.urls.get(r.target_key) ?? null}
+                  linksUnavailable={linksUnavailable}
+                />
               </li>
             ))}
           </ul>
@@ -134,11 +158,36 @@ function ContractRow({ k, addedOn }: { k: string; addedOn: string }) {
   )
 }
 
-function SupplierRow({ k, addedOn }: { k: string; addedOn: string }) {
+/**
+ * The name is the link, because that is the thing a person points at.
+ *
+ * A supplier with no page on the site keeps the plain heading it had before
+ * and is told why, rather than being given a control that goes nowhere or, in
+ * the earlier version of this idea, a guessed address that returns 404. Most
+ * suppliers in the contract data are below the site's size threshold, and a
+ * private individual has no page at all, so the unlinked row is an ordinary
+ * outcome and has to read like one.
+ */
+function SupplierRow({
+  k,
+  addedOn,
+  pageUrl,
+  linksUnavailable,
+}: {
+  k: string
+  addedOn: string
+  pageUrl: string | null
+  linksUnavailable: boolean
+}) {
   return (
     <>
-      <p className="row-key">{k}</p>
+      <p className="row-key">
+        {pageUrl === null ? k : <a href={pageUrl}>{k}</a>}
+      </p>
       <p className="row-meta">Added {addedOn}</p>
+      {pageUrl === null && !linksUnavailable ? (
+        <p className="sb">{NO_SUPPLIER_PAGE_NOTE}</p>
+      ) : null}
       <form method="post" action="/watch/remove" className="quiet">
         <input type="hidden" name="kind" value="vendor" />
         <input type="hidden" name="key" value={k} />

@@ -15,9 +15,17 @@ export const dynamic = 'force-dynamic'
 export default async function VerifyPage({
   searchParams,
 }: {
-  searchParams: Promise<{ token?: string }>
+  // The framework's own shape rather than a narrower one: a repeated parameter
+  // arrives as an array, and parseWatchTarget is what refuses that.
+  searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
-  const { token } = await searchParams
+  const params = await searchParams
+  const token = typeof params.token === 'string' ? params.token : undefined
+
+  // Nothing about a watch target appears here. The emailed link carries only a
+  // token, on purpose: Resend keeps a copy of every message for 30 days, and a
+  // watchlist item must not be in it. The intent is in a cookie on the device
+  // that asked. See rememberWatchIntent in src/lib/session.ts.
 
   if (!isTokenShaped(token)) {
     return (

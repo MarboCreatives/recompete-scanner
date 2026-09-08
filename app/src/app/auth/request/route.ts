@@ -13,21 +13,51 @@ import { log, errorFacts } from '@/lib/log'
 import { sendEmail } from '@/lib/email'
 import { signInLinkEmail, SIGN_IN_SUBJECT } from '@/lib/email-templates'
 import { appUrl } from '@/lib/env'
+import { parseWatchTarget, withWatchTarget } from '@/lib/watch'
+import { rememberWatchIntent } from '@/lib/session'
 
 /** Links one address may ask for in an hour. */
 const PER_ADDRESS_HOURLY_CAP = 5
-/** Links the whole site may send in an hour. */
-const GLOBAL_HOURLY_CAP = 20
+
+/**
+ * Links the whole site may send in an hour.
+ *
+ * Sixty, raised from twenty on 7 September 2026 when four testers were about to
+ * be invited. Twenty is what four people asking for five links each comes to
+ * exactly, and a failed send charges the cap by design, so one person fumbling
+ * a link could have closed sign-in for everybody, Jon included, for the rest of
+ * the hour. That is a bad first impression bought for nothing.
+ *
+ * It is the per-address cap that does the anti-abuse work: a script has to find
+ * a new address for every five attempts. This one exists to bound the damage
+ * when it does, and to protect the sending quota. Sixty is still far below any
+ * plausible real load, because the product has five users.
+ *
+ * Raise it again when there are more people than that, and lower it if it is
+ * ever reached without a good reason. `sign_in_global_cap_reached` in the logs
+ * is how you would know; nothing else reports it.
+ */
+const GLOBAL_HOURLY_CAP = 60
 
 export async function POST(request: Request): Promise<Response> {
   if (!isSameOrigin(request)) return forbidden()
 
   const form = await request.formData()
+
+  // Read once, at the top, because EVERY exit from this route has to carry it.
+  // The sign-in page has already promised to return this person to what they
+  // were about to watch; sending them back to that page without the target
+  // would break that promise silently, and they would have to start again from
+  // recompeteradar.ca. Only the happy path carried it at first.
+  const target = parseWatchTarget(form.get('kind'), form.get('key'))
+  const backToSignIn = (problem: string) =>
+    see(withWatchTarget(`/sign-in?problem=${problem}`, target))
+
   const email = normalizeEmail(form.get('email'))
   // Saying the address is malformed reveals nothing about who has an account,
   // and swallowing a typo would produce a confident "check your inbox" for a
   // message that could never arrive.
-  if (email === null) return see('/sign-in?problem=address')
+  if (email === null) return backToSignIn('address')
 
   let raw: string
   let hash: string
@@ -46,7 +76,7 @@ export async function POST(request: Request): Promise<Response> {
     if ((perAddress[0]?.n ?? 0) >= PER_ADDRESS_HOURLY_CAP) {
       // No address in the line; the event name is the whole message.
       log({ event: 'sign_in_address_cap_reached' })
-      return see('/sign-in?problem=too-many')
+      return backToSignIn('too-many')
     }
 
     // Without a global cap, one script using many different addresses buys five
@@ -58,7 +88,7 @@ export async function POST(request: Request): Promise<Response> {
     )
     if ((global[0]?.n ?? 0) >= GLOBAL_HOURLY_CAP) {
       log({ event: 'sign_in_global_cap_reached' })
-      return see('/sign-in?problem=busy')
+      return backToSignIn('busy')
     }
 
     raw = newToken()
@@ -73,10 +103,18 @@ export async function POST(request: Request): Promise<Response> {
   } catch (err) {
     if (err instanceof DatabaseError) {
       log({ event: 'sign_in_request_failed', ...errorFacts(err) })
-      return see('/sign-in?problem=unreachable')
+      return backToSignIn('unreachable')
     }
     throw err
   }
+
+  // What they were about to watch is stored in a short-lived cookie on this
+  // device, NOT added to the link. Resend keeps a copy of every message for 30
+  // days, and the account page says so; putting a watchlist item in the link
+  // would put it in that copy, and a watchlist is personal data under
+  // MASTER-DESIGN rule 8. Also cleared here when there is no target, so a plain
+  // sign in cannot inherit an older one.
+  await rememberWatchIntent(target)
 
   // Built from the configured address, never from a request header. Someone who
   // can set the Host header could otherwise point the link at their own site.
@@ -96,7 +134,7 @@ export async function POST(request: Request): Promise<Response> {
     // The token row is kept on purpose. If a failed send released the cap, a
     // script could buy unlimited attempts by choosing addresses that fail.
     log({ event: 'sign_in_email_failed', status: sent.status ?? 0 })
-    return see('/sign-in?problem=email')
+    return backToSignIn('email')
   }
 
   // Reached only when a send actually succeeded, so the sentence on that page

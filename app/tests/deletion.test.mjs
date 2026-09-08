@@ -308,3 +308,15 @@ test('the privacy policy is reachable without signing in', async () => {
     'the home page must link to it',
   )
 })
+
+test('the account page offers sign out, so the only button is not the destructive one', async () => {
+  // Somebody who wants to leave goes to the page called "Your account". Until
+  // this was added, the only control on it deleted the account permanently,
+  // and a tester looking for sign out would have found that instead.
+  await withDatabase(async (db) => {
+    const { cookie } = await seedFullAccount(db)
+    const html = await (await fetch(`${BASE}/account`, { headers: { cookie } })).text()
+    assert.match(html, /action="\/auth\/sign-out"/, 'sign out must be reachable here')
+    assert.match(html, /Signing out leaves everything as it is/)
+  })
+})

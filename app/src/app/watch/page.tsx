@@ -48,7 +48,10 @@ export default async function WatchPage({
     )
   }
 
-  const state = await requireUser()
+  // The target is handed to requireUser so that a signed-out person is returned
+  // here after signing in. Without it they land on an empty feed with no memory
+  // of what they pressed, and would have to find it on the site again.
+  const state = await requireUser(target)
   if (state.kind === 'outage') return <DatabaseOutage />
 
   let already: boolean

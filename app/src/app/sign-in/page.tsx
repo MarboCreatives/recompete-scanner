@@ -6,6 +6,7 @@
 // given problem shows its own sentence and none of the others.
 
 import Link from 'next/link'
+import { parseWatchTarget, RETURNING_TO_WATCH_NOTE } from '@/lib/watch'
 
 export const dynamic = 'force-dynamic'
 
@@ -28,10 +29,18 @@ const PROBLEMS: Record<string, string> = {
 export default async function SignInPage({
   searchParams,
 }: {
-  searchParams: Promise<{ problem?: string }>
+  // The framework's own shape rather than a narrower one: a repeated parameter
+  // arrives as an array, and parseWatchTarget is what refuses that.
+  searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
-  const { problem } = await searchParams
+  const params = await searchParams
+  const problem = typeof params.problem === 'string' ? params.problem : undefined
   const message = problem ? PROBLEMS[problem] : undefined
+
+  // Somebody who pressed Watch and was stopped here. Re-parsed rather than
+  // trusted, and written back out below as two named fields, so nothing that
+  // would fail validation can travel any further.
+  const target = parseWatchTarget(params.kind, params.key)
 
   return (
     <main>
@@ -44,6 +53,8 @@ export default async function SignInPage({
         remember and none is stored.
       </p>
 
+      {target ? <p className="sb">{RETURNING_TO_WATCH_NOTE}</p> : null}
+
       <form method="post" action="/auth/request">
         <label htmlFor="email">Email address</label>
         <input
@@ -54,6 +65,12 @@ export default async function SignInPage({
           required
           inputMode="email"
         />
+        {target ? (
+          <>
+            <input type="hidden" name="kind" value={target.kind} />
+            <input type="hidden" name="key" value={target.key} />
+          </>
+        ) : null}
         <button type="submit">Send me a link</button>
       </form>
 
