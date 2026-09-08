@@ -38,7 +38,17 @@ export default async function SignInPage({
 }) {
   const params = await searchParams
   const problem = typeof params.problem === 'string' ? params.problem : undefined
-  const message = problem ? PROBLEMS[problem] : undefined
+  // Object.hasOwn rather than a bare lookup. PROBLEMS is an object literal, so
+  // an unguarded PROBLEMS[problem] reaches Object.prototype: ?problem=toString
+  // resolved to a function, React was handed a function to render, and this
+  // page answered 500. Measured on production on 8 September 2026 —
+  // toString, constructor, __proto__, valueOf and hasOwnProperty all returned
+  // 500, while every real key and any nonsense word returned 200.
+  //
+  // Nobody types those by hand. A crawler or a scanner does, and the front door
+  // answering 500 is worth more than the one line it costs to stop.
+  const message =
+    problem && Object.hasOwn(PROBLEMS, problem) ? PROBLEMS[problem] : undefined
 
   // The standing notice and the refusal carry the same meaning in different
   // words, so showing both makes the page read as though it is repeating
