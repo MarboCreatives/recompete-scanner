@@ -7,6 +7,7 @@
 
 import Link from 'next/link'
 import { parseWatchTarget, parseWatchLabels, RETURNING_TO_WATCH_NOTE } from '@/lib/watch'
+import { INVITED_ONLY_NOTICE } from '@/lib/invited'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,6 +20,8 @@ const PROBLEMS: Record<string, string> = {
     'We could not finish signing you in just now. Ask for a new link and try again in a few minutes.',
   unreachable:
     'We could not reach the database just now. Nothing was sent and nothing was changed. Try again in a few minutes.',
+  'not-invited':
+    'Sign in is limited to invited testers at the moment. If you were invited, use the address the invitation was sent to.',
   'too-many':
     'Too many sign-in links have been asked for from this address in the last hour. Try again in an hour.',
   busy: 'Too many sign-in links have been asked for just now. Try again in an hour.',
@@ -51,6 +54,16 @@ export default async function SignInPage({
       <h1>Sign in</h1>
 
       {message ? <p role="alert">{message}</p> : null}
+
+      {/*
+        Above the address field, and shown to everyone, because the point is to
+        be read BEFORE anyone types. Letting a visitor enter an address, wait,
+        and only then be refused is the thing this avoids. It is not conditional
+        on INVITED_EMAILS being set: the gate fails closed, so an unset variable
+        is the gate refusing everybody rather than the gate switched off. See
+        INVITED_ONLY_NOTICE.
+      */}
+      <p role="note">{INVITED_ONLY_NOTICE}</p>
 
       <p>
         Enter your email address and we will send you a link. There is no password to
