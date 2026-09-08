@@ -6,7 +6,7 @@
 // given problem shows its own sentence and none of the others.
 
 import Link from 'next/link'
-import { parseWatchTarget, RETURNING_TO_WATCH_NOTE } from '@/lib/watch'
+import { parseWatchTarget, parseWatchLabels, RETURNING_TO_WATCH_NOTE } from '@/lib/watch'
 
 export const dynamic = 'force-dynamic'
 
@@ -41,6 +41,10 @@ export default async function SignInPage({
   // trusted, and written back out below as two named fields, so nothing that
   // would fail validation can travel any further.
   const target = parseWatchTarget(params.kind, params.key)
+  // Carried across this page so the contract still says whose it is when they
+  // arrive back at it. Re-parsed here rather than echoed, like everything else
+  // on this journey.
+  const labels = parseWatchLabels(params.kind, params.name, params.dept)
 
   return (
     <main>
@@ -69,6 +73,12 @@ export default async function SignInPage({
           <>
             <input type="hidden" name="kind" value={target.kind} />
             <input type="hidden" name="key" value={target.key} />
+            {labels.name !== null ? (
+              <input type="hidden" name="name" value={labels.name} />
+            ) : null}
+            {labels.dept !== null ? (
+              <input type="hidden" name="dept" value={labels.dept} />
+            ) : null}
           </>
         ) : null}
         <button type="submit">Send me a link</button>

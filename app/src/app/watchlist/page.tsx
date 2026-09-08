@@ -18,6 +18,7 @@ import {
   governmentRecordUrl,
   SUPPLIER_KEY_NOTE,
   MAX_WATCH_ITEMS,
+  NO_CONTRACT_LABEL_NOTE,
 } from '@/lib/watch'
 import {
   supplierPageUrls,
@@ -27,7 +28,16 @@ import {
 
 export const dynamic = 'force-dynamic'
 
-type Row = { kind: string; target_key: string; added_on: string }
+type Row = {
+  kind: string
+  target_key: string
+  added_on: string
+  // Captions the public site sent when Watch was pressed, not identity and not
+  // resolved here. Null on every row saved before 0003_watch_labels.sql and on
+  // any saved from a link that carried none.
+  label_name: string | null
+  label_dept: string | null
+}
 
 /**
  * One sentence for each way an attempt can fail. None of them is a substring
@@ -58,7 +68,7 @@ export default async function WatchlistPage({
     // operated from, so the page renders the same day for everyone and no
     // client locale can turn 09-05 into 05-09.
     rows = await query<Row>(
-      `select kind, target_key,
+      `select kind, target_key, label_name, label_dept,
               to_char(created_at at time zone 'America/Toronto', 'YYYY-MM-DD') as added_on
          from watch_items
         where user_id = $1
@@ -101,7 +111,12 @@ export default async function WatchlistPage({
           <ul>
             {contracts.map((r) => (
               <li key={`contract:${r.target_key}`}>
-                <ContractRow k={r.target_key} addedOn={r.added_on} />
+                <ContractRow
+                  k={r.target_key}
+                  addedOn={r.added_on}
+                  name={r.label_name}
+                  dept={r.label_dept}
+                />
               </li>
             ))}
           </ul>
@@ -138,14 +153,44 @@ export default async function WatchlistPage({
   )
 }
 
-function ContractRow({ k, addedOn }: { k: string; addedOn: string }) {
+/**
+ * A contract, said the way a person would recognise it.
+ *
+ * The supplier name goes first because it is the thing anybody actually
+ * remembers pressing Watch on. Before it existed this row read
+ * `C-2025-2026-Q4-00435 / Department nrc-cnrc`, which named the contract
+ * exactly and told the reader nothing.
+ *
+ * The reference number and the government-record link both stay. They are what
+ * makes the row checkable, and the name is a caption somebody else supplied
+ * over a URL, so it never replaces the identity beneath it. The department code
+ * stays for the same reason; the name goes beside it rather than instead of it.
+ *
+ * A row with no name keeps the shape it had and is told what to do about it.
+ * Nothing is guessed: this application has no contract data to guess from until
+ * the scanner lands at M2, and a wrong supplier name on a watched contract
+ * would be worse than an absent one.
+ */
+function ContractRow({
+  k,
+  addedOn,
+  name,
+  dept,
+}: {
+  k: string
+  addedOn: string
+  name: string | null
+  dept: string | null
+}) {
   const { org, reference } = splitContractKey(k)
   return (
     <>
+      {name !== null ? <p className="row-key">{name}</p> : null}
       <p className="ref">{reference}</p>
       <p className="row-meta">
-        Department {org} &middot; added {addedOn}
+        {dept !== null ? `${dept} (${org})` : `Department ${org}`} &middot; added {addedOn}
       </p>
+      {name === null ? <p className="sb">{NO_CONTRACT_LABEL_NOTE}</p> : null}
       <p>
         <a href={governmentRecordUrl(k)}>Check it on the government record</a>
       </p>

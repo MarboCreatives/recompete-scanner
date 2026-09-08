@@ -10,7 +10,7 @@ import { isSameOrigin } from '@/lib/same-origin'
 import { query, queryOne, DatabaseError } from '@/lib/db'
 import { log, errorFacts } from '@/lib/log'
 import { getCurrentUser } from '@/lib/session'
-import { parseWatchTarget, MAX_WATCH_ITEMS } from '@/lib/watch'
+import { parseWatchTarget, parseWatchLabels, MAX_WATCH_ITEMS } from '@/lib/watch'
 
 export async function POST(request: Request): Promise<Response> {
   if (!isSameOrigin(request)) return forbidden()
@@ -33,6 +33,12 @@ export async function POST(request: Request): Promise<Response> {
   const target = parseWatchTarget(form.get('kind'), form.get('key'))
   if (target === null) return see('/watchlist?problem=invalid')
 
+  // The caption to show on the row. Refusing a watch because its caption was
+  // unusable would be the wrong trade every time, so parseWatchLabels cannot
+  // fail: a caption it will not accept is simply absent, and the watchlist has
+  // a sentence for that. Nothing below looks anything up by it.
+  const labels = parseWatchLabels(form.get('kind'), form.get('name'), form.get('dept'))
+
   try {
     // Counted before inserting rather than after, so the limit is a refusal
     // with a sentence rather than a constraint violation with a 500.
@@ -47,11 +53,24 @@ export async function POST(request: Request): Promise<Response> {
 
     // Pressing Watch twice on the same thing is not an error; the unique
     // constraint on (user_id, kind, target_key) absorbs it.
+    //
+    // It is an UPDATE rather than DO NOTHING so that pressing Watch again is
+    // how a row saved without a caption acquires one. Every row written before
+    // 0003_watch_labels.sql has none and there is nothing to backfill them
+    // from, so this is the only route by which they ever become readable, and
+    // the watchlist tells people to use it in those words.
+    //
+    // coalesce, so the new value wins only when there IS one. A link that
+    // carries no name must not blank a name already on the row: the same
+    // contract is reachable from a bookmark saved before the site sent
+    // captions, and following it would otherwise quietly undo the fix.
     await query(
-      `insert into watch_items (user_id, kind, target_key)
-       values ($1, $2, $3)
-       on conflict (user_id, kind, target_key) do nothing`,
-      [user.id, target.kind, target.key],
+      `insert into watch_items (user_id, kind, target_key, label_name, label_dept)
+       values ($1, $2, $3, $4, $5)
+       on conflict (user_id, kind, target_key) do update
+          set label_name = coalesce(excluded.label_name, watch_items.label_name),
+              label_dept = coalesce(excluded.label_dept, watch_items.label_dept)`,
+      [user.id, target.kind, target.key, labels.name, labels.dept],
     )
   } catch (err) {
     if (err instanceof DatabaseError) {

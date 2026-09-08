@@ -171,10 +171,17 @@ test('the emailed link carries a token and nothing about a watchlist', async () 
     assert.equal(params.get('key'), null, 'the link must not name what was watched')
     assert.ok(!link.includes('skyalyne'), `the key must not appear anywhere in ${link}`)
 
-    // It is on the device that asked instead.
+    // It is on the device that asked instead. Decoded rather than searched for
+    // as a substring: the cookie is base64url of [kind, key, name, dept], so a
+    // substring check would fail on a correct cookie and could pass on one that
+    // merely happened to contain the letters. Decoding asserts the actual
+    // fields, which is what this check was always trying to say.
     const jar = cookieFrom(asked, '__Host-rs_watch')
     assert.ok(jar, 'the intent must be stored on the device that asked')
-    assert.match(jar, /vendor/)
+    const stored = JSON.parse(
+      Buffer.from(jar.slice(jar.indexOf('=') + 1), 'base64url').toString('utf8'),
+    )
+    assert.deepEqual(stored.slice(0, 2), ['vendor', 'skyalyne'])
   })
 })
 

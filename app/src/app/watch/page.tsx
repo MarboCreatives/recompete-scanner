@@ -16,10 +16,13 @@ import { queryOne } from '@/lib/db'
 import { DatabaseOutage } from '@/components/database-outage'
 import {
   parseWatchTarget,
+  parseWatchLabels,
   splitContractKey,
   governmentRecordUrl,
   WATCH_EXPLAINER,
   SUPPLIER_KEY_NOTE,
+  ADD_NAME_OFFER,
+  type WatchLabels,
 } from '@/lib/watch'
 
 export const dynamic = 'force-dynamic'
@@ -35,6 +38,9 @@ export default async function WatchPage({
 }) {
   const params = await searchParams
   const target = parseWatchTarget(params.kind, params.key)
+  // The caption the site sent, if it sent one. Never identity: the page below
+  // looks nothing up by it and the row it writes is identified by the key alone.
+  const labels = parseWatchLabels(params.kind, params.name, params.dept)
 
   if (target === null) {
     return (
@@ -51,16 +57,22 @@ export default async function WatchPage({
   // The target is handed to requireUser so that a signed-out person is returned
   // here after signing in. Without it they land on an empty feed with no memory
   // of what they pressed, and would have to find it on the site again.
-  const state = await requireUser(target)
+  const state = await requireUser(target, labels)
   if (state.kind === 'outage') return <DatabaseOutage />
 
   let already: boolean
+  let storedName: string | null = null
   try {
-    const row = await queryOne<{ id: string }>(
-      'select id from watch_items where user_id = $1 and kind = $2 and target_key = $3',
+    const row = await queryOne<{ id: string; label_name: string | null }>(
+      `select id, label_name from watch_items
+        where user_id = $1 and kind = $2 and target_key = $3`,
       [state.user.id, target.kind, target.key],
     )
     already = row !== undefined
+    // Read in the same query rather than a second one. It decides whether this
+    // page can offer to fill in a name the saved row is missing, which is the
+    // only route by which a row saved before captions existed ever gets one.
+    storedName = row?.label_name ?? null
   } catch {
     // The two failure shapes are told apart deliberately. This one could not
     // read, so it must not claim the item is or is not already watched.
@@ -74,11 +86,29 @@ export default async function WatchPage({
     <main>
       <h1>{heading}</h1>
 
-      {isContract ? <ContractDetail k={target.key} /> : <SupplierDetail k={target.key} />}
+      {isContract ? (
+        <ContractDetail k={target.key} labels={labels} />
+      ) : (
+        <SupplierDetail k={target.key} />
+      )}
 
       {already ? (
         <>
           <p>You are already watching this.</p>
+          {isContract && labels.name !== null && storedName === null ? (
+            <>
+              <p>{ADD_NAME_OFFER}</p>
+              <form method="post" action="/watch/add">
+                <input type="hidden" name="kind" value={target.kind} />
+                <input type="hidden" name="key" value={target.key} />
+                <input type="hidden" name="name" value={labels.name} />
+                {labels.dept !== null ? (
+                  <input type="hidden" name="dept" value={labels.dept} />
+                ) : null}
+                <button type="submit">Add the supplier name</button>
+              </form>
+            </>
+          ) : null}
           <form method="post" action="/watch/remove">
             <input type="hidden" name="kind" value={target.kind} />
             <input type="hidden" name="key" value={target.key} />
@@ -91,6 +121,12 @@ export default async function WatchPage({
           <form method="post" action="/watch/add">
             <input type="hidden" name="kind" value={target.kind} />
             <input type="hidden" name="key" value={target.key} />
+            {labels.name !== null ? (
+              <input type="hidden" name="name" value={labels.name} />
+            ) : null}
+            {labels.dept !== null ? (
+              <input type="hidden" name="dept" value={labels.dept} />
+            ) : null}
             <button type="submit">Watch</button>
           </form>
         </>
@@ -112,12 +148,19 @@ export default async function WatchPage({
  * to the government's own record is the way to be certain which contract this
  * is, so it is a sentence of its own rather than a footnote.
  */
-function ContractDetail({ k }: { k: string }) {
+function ContractDetail({ k, labels }: { k: string; labels: WatchLabels }) {
   const { org, reference } = splitContractKey(k)
   return (
     <>
+      {labels.name !== null ? <p className="row-key">{labels.name}</p> : null}
       <p>Reference number {reference}.</p>
-      <p>Department code {org}, as used by open.canada.ca.</p>
+      {labels.dept !== null ? (
+        <p>
+          {labels.dept} ({org}), as the department is named on recompeteradar.ca.
+        </p>
+      ) : (
+        <p>Department code {org}, as used by open.canada.ca.</p>
+      )}
       <p>
         <a href={governmentRecordUrl(k)}>Check this contract on the government record</a>
       </p>

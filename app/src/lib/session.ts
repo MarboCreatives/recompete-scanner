@@ -13,7 +13,14 @@
 import { cache } from 'react'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { withWatchTarget, parseWatchTarget, type WatchTarget } from './watch'
+import {
+  withWatchTarget,
+  parseWatchTarget,
+  parseWatchLabels,
+  NO_LABELS,
+  type WatchTarget,
+  type WatchLabels,
+} from './watch'
 import { query, DatabaseError } from './db'
 import { isTokenShaped, hashToken } from './tokens'
 
@@ -74,32 +81,88 @@ export async function clearSessionCookie(): Promise<void> {
 const WATCH_COOKIE = '__Host-rs_watch'
 const WATCH_COOKIE_SECONDS = 20 * 60
 
-export async function rememberWatchIntent(target: WatchTarget | null): Promise<void> {
+/**
+ * A target plus its caption: everything that has to survive the sign-in flow.
+ *
+ * The labels travel because losing them would be its own small broken promise.
+ * Somebody presses Watch on a contract, signs in, comes back, and the page
+ * would say only a reference number and a department code — the exact
+ * unreadable row this was built to fix, appearing precisely for the person who
+ * had to sign in and least expects it.
+ */
+export type WatchIntent = { target: WatchTarget; labels: WatchLabels }
+
+export async function rememberWatchIntent(
+  target: WatchTarget | null,
+  labels: WatchLabels = NO_LABELS,
+): Promise<void> {
   const jar = await cookies()
   if (target === null) {
     // Clear any older intent, so a plain sign in cannot inherit one.
     jar.set(WATCH_COOKIE, '', cookieOptions(0))
     return
   }
-  jar.set(
-    WATCH_COOKIE,
-    `${target.kind}:${encodeURIComponent(target.key)}`,
-    cookieOptions(WATCH_COOKIE_SECONDS),
-  )
+  // Cleaned before storage as well as on the way out, so a value that would be
+  // refused on display is never in the jar in the first place.
+  const clean = parseWatchLabels(target.kind, labels.name, labels.dept)
+  jar.set(WATCH_COOKIE, encodeIntent(target, clean), cookieOptions(WATCH_COOKIE_SECONDS))
 }
 
 /** Read the stored intent without consuming it. For failure paths. */
-export async function peekWatchIntent(): Promise<WatchTarget | null> {
+export async function peekWatchIntent(): Promise<WatchIntent | null> {
   return readWatchCookie(await cookies())
 }
 
-function readWatchCookie(jar: Awaited<ReturnType<typeof cookies>>): WatchTarget | null {
-  const raw = jar.get(WATCH_COOKIE)?.value
-  if (typeof raw !== 'string' || raw === '') return null
+/**
+ * The cookie value: base64url of `[kind, key, name, dept]` as JSON.
+ *
+ * **Not colon-separated fields, and that is the whole point.** This framework
+ * percent-decodes a cookie value before handing it over, so any encoding done
+ * here is undone before it is read back. A separated format is therefore only
+ * as trustworthy as the bytes somebody put in the jar: `vendor:https://evil`
+ * arrives as three fields, the key becomes `https`, and `https` is a perfectly
+ * legal vendor key. That was measured, as a failing check, not imagined.
+ *
+ * base64url's alphabet is `A-Z a-z 0-9 - _`, none of which percent-encoding
+ * touches, so what is written is exactly what comes back and no value can grow
+ * a separator on the way. Anything that is not valid base64url carrying a
+ * four-element array simply is not an intent.
+ *
+ * This is not a signature and is not pretending to be one. The cookie is
+ * httpOnly, so a page cannot read or write it, but somebody with the browser in
+ * their hands can put anything here. That is why every field is re-validated
+ * after decoding, exactly as before: the encoding stops fields bleeding into
+ * one another, and `parseWatchTarget` stops the result meaning anything it
+ * should not.
+ */
+function encodeIntent(target: WatchTarget, labels: WatchLabels): string {
+  return Buffer.from(
+    JSON.stringify([target.kind, target.key, labels.name, labels.dept]),
+    'utf8',
+  ).toString('base64url')
+}
+
+/** The four raw fields, still unvalidated, or null if this is not an intent. */
+function decodeIntent(raw: string): [unknown, unknown, unknown, unknown] | null {
+  try {
+    const fields = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'))
+    if (Array.isArray(fields) && fields.length === 4) {
+      return fields as [unknown, unknown, unknown, unknown]
+    }
+  } catch {
+    // Not this format. Fall through rather than fail: the older one is still
+    // in browsers for twenty minutes after a deploy.
+  }
+
+  // The format written before labels existed: `kind:key`, key percent-encoded,
+  // split on the FIRST colon only so everything after it is one value. Kept
+  // byte-for-byte so that a cookie set minutes before a deploy still returns
+  // the person to what they pressed, and so the refusals this format already
+  // had keep behaving identically.
   const colon = raw.indexOf(':')
   if (colon < 0) return null
   try {
-    return parseWatchTarget(raw.slice(0, colon), decodeURIComponent(raw.slice(colon + 1)))
+    return [raw.slice(0, colon), decodeURIComponent(raw.slice(colon + 1)), null, null]
   } catch {
     // decodeURIComponent throws on a malformed sequence. A broken cookie is
     // simply no intent.
@@ -107,18 +170,30 @@ function readWatchCookie(jar: Awaited<ReturnType<typeof cookies>>): WatchTarget 
   }
 }
 
+/** The stored intent, re-validated field by field, or null. */
+function readWatchCookie(jar: Awaited<ReturnType<typeof cookies>>): WatchIntent | null {
+  const raw = jar.get(WATCH_COOKIE)?.value
+  if (typeof raw !== 'string' || raw === '') return null
+  const fields = decodeIntent(raw)
+  if (fields === null) return null
+  const target = parseWatchTarget(fields[0], fields[1])
+  if (target === null) return null
+  return { target, labels: parseWatchLabels(target.kind, fields[2], fields[3]) }
+}
+
 /**
  * Read and forget the stored intent.
  *
  * The value is put back through `parseWatchTarget`, so a cookie somebody edited
  * by hand is worth no more than one this application wrote. It can only ever
- * name a `/watch` address on this origin.
+ * name a `/watch` address on this origin, and its labels go through the same
+ * cleaning as any that arrived in a URL.
  */
-export async function takeWatchIntent(): Promise<WatchTarget | null> {
+export async function takeWatchIntent(): Promise<WatchIntent | null> {
   const jar = await cookies()
-  const target = readWatchCookie(jar)
+  const intent = readWatchCookie(jar)
   jar.set(WATCH_COOKIE, '', cookieOptions(0))
-  return target
+  return intent
 }
 
 /** The raw cookie value, if it is even the right shape to look up. */
@@ -169,7 +244,10 @@ export const getCurrentUser = cache(async function getCurrentUser(): Promise<Use
  * The only address it can produce is `/sign-in` on this origin, with a key that
  * has already passed `parseWatchTarget`.
  */
-export async function requireUser(returnToWatch?: WatchTarget | null): Promise<UserOrOutage> {
+export async function requireUser(
+  returnToWatch?: WatchTarget | null,
+  labels: WatchLabels = NO_LABELS,
+): Promise<UserOrOutage> {
   let user: User | null
   try {
     user = await getCurrentUser()
@@ -181,7 +259,7 @@ export async function requireUser(returnToWatch?: WatchTarget | null): Promise<U
   }
   // Deliberately outside the try, so redirect()'s own thrown signal is never
   // swallowed by the catch above.
-  if (user === null) redirect(withWatchTarget('/sign-in', returnToWatch ?? null))
+  if (user === null) redirect(withWatchTarget('/sign-in', returnToWatch ?? null, labels))
   return { kind: 'user', user }
 }
 

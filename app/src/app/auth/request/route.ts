@@ -13,7 +13,7 @@ import { log, errorFacts } from '@/lib/log'
 import { sendEmail } from '@/lib/email'
 import { signInLinkEmail, SIGN_IN_SUBJECT } from '@/lib/email-templates'
 import { appUrl } from '@/lib/env'
-import { parseWatchTarget, withWatchTarget } from '@/lib/watch'
+import { parseWatchTarget, parseWatchLabels, withWatchTarget } from '@/lib/watch'
 import { rememberWatchIntent } from '@/lib/session'
 
 /** Links one address may ask for in an hour. */
@@ -50,8 +50,13 @@ export async function POST(request: Request): Promise<Response> {
   // would break that promise silently, and they would have to start again from
   // recompeteradar.ca. Only the happy path carried it at first.
   const target = parseWatchTarget(form.get('kind'), form.get('key'))
+  // The caption travels with the target for the same reason and by the same
+  // route. Coming back to a sign-in page that had forgotten which supplier the
+  // contract belonged to would be the unreadable row this was built to fix,
+  // shown to the one person who had to sign in to get here.
+  const labels = parseWatchLabels(form.get('kind'), form.get('name'), form.get('dept'))
   const backToSignIn = (problem: string) =>
-    see(withWatchTarget(`/sign-in?problem=${problem}`, target))
+    see(withWatchTarget(`/sign-in?problem=${problem}`, target, labels))
 
   const email = normalizeEmail(form.get('email'))
   // Saying the address is malformed reveals nothing about who has an account,
@@ -114,7 +119,7 @@ export async function POST(request: Request): Promise<Response> {
   // would put it in that copy, and a watchlist is personal data under
   // MASTER-DESIGN rule 8. Also cleared here when there is no target, so a plain
   // sign in cannot inherit an older one.
-  await rememberWatchIntent(target)
+  await rememberWatchIntent(target, labels)
 
   // Built from the configured address, never from a request header. Someone who
   // can set the Host header could otherwise point the link at their own site.
