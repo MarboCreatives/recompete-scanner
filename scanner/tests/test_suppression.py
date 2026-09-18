@@ -114,7 +114,7 @@ class SuppressionIsApplied(unittest.TestCase):
 
         before, _ = snapshot.build_snapshot(before_rows, TODAY)
         after, _ = snapshot.build_snapshot(after_rows, TODAY)
-        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertGreater(len(events), 0, "the fixture must actually produce events")
         haystack = " ".join(
@@ -265,7 +265,7 @@ class NothingIsPrinted(unittest.TestCase):
         pub = invented.published_of(after)
 
         def run():
-            diff.run_diff(by_key(before), {}, after, pub, TODAY)
+            diff.run_diff(by_key(before), {}, after, pub, TODAY, base_run=7, self_tests_passed=True, drift_passed=True)
             diff.rows_to_record(by_key(before), {}, after, pub, run_date=TODAY)
 
         out, err = self.capture(run)
@@ -294,7 +294,7 @@ class NothingIsPrinted(unittest.TestCase):
         )
         after, _ = snapshot.build_snapshot(after_rows, TODAY)
         reason, events, diff_counts = diff.run_diff(
-            by_key(before), {}, after, invented.published_of(after), TODAY)
+            by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7, self_tests_passed=True, drift_passed=True)
         # The premise: companies reach events, carrying their keys. Without
         # this, "no name reached the log" can hold because there was none.
         self.assertIsNone(reason)
@@ -316,6 +316,125 @@ class NothingIsPrinted(unittest.TestCase):
         self.assertNotIn(invented.REF_PREFIX, upper, "a reference number reached the log")
         self.assertNotIn("SOMEBODY", upper, "the buyer's name reached the log")
         self.assertNotIn(WITHHELD.upper(), upper)
+
+
+class NothingPrintsAName(unittest.TestCase):
+    """A repr is printed wherever an object is logged, formatted or asserted about.
+
+    NothingIsPrinted checks what the code prints. This checks what the objects
+    print when somebody ELSE prints them: logging.error("bad run %s", pipe) in
+    scan.py, an f-string in an exception message, an assert with the object as
+    its message, a traceback that shows a caller's locals. Outside review, item
+    12, 18 September 2026: the default NamedTuple and dataclass reprs printed
+    every field. Names only: references and contract keys still print in the
+    reprs of rows and events, and M2-DESIGN 7's 'no reference in a log' is kept
+    where logs are written, which is report() here and scan.py in PR D.
+    """
+
+    def setUp(self):
+        snapshot.load_site_rules()
+
+    def pipe(self):
+        raws = rows_for(invented.INDIVIDUALS) + rows_for(invented.ORGANISATIONS, 100)
+        pipe = snapshot.pipeline(raws, TODAY)
+        # The premise: the rows really do hold every invented person's name,
+        # unsuppressed. Without this the case passes on an empty pipeline.
+        held = " ".join(str(r["vendor_name"]) for r in pipe.rows).upper()
+        for name, _why in invented.INDIVIDUALS:
+            self.assertIn(name.upper(), held)
+        return pipe
+
+    def assert_no_name(self, text, how):
+        upper = text.upper()
+        for token in invented.INVENTED_TOKENS:
+            with self.subTest(how=how, token=token):
+                self.assertNotIn(token, upper, f"{how} printed a supplier name")
+
+    def test_a_pipeline_prints_counts_only_however_it_is_printed(self):
+        pipe = self.pipe()
+        for how, text in [
+            ("repr(pipe)", repr(pipe)),
+            ("str(pipe)", str(pipe)),
+            ("f'{pipe}'", f"{pipe}"),
+            ("format(pipe)", format(pipe, "")),
+            ("'%s' % pipe", "%s" % (pipe,)),
+            ("repr(pipe.rows)", repr(pipe.rows)),
+            ("repr(pipe.rows[0])", repr(pipe.rows[0])),
+            ("str(pipe.rows[0])", str(pipe.rows[0])),
+            ("repr(pipe._asdict())", repr(pipe._asdict())),
+        ]:
+            self.assert_no_name(text, how)
+        # M2-DESIGN 7 says no reference number either. The pipeline itself can
+        # keep that promise; _asdict() cannot, since it hands out refs and
+        # published as they are, so it is checked for names only.
+        for how, text in [("repr(pipe)", repr(pipe)), ("str(pipe)", str(pipe)),
+                          ("repr(pipe.rows)", repr(pipe.rows))]:
+            with self.subTest(how=how):
+                self.assertNotIn(invented.REF_PREFIX, text.upper(), f"{how} printed a reference")
+        self.assertIn(f"{len(pipe.rows):,} live rows", repr(pipe), "counts, not nothing")
+
+    def test_logging_a_pipeline_prints_no_name(self):
+        pipe = self.pipe()
+        err = io.StringIO()
+        handler = logging.StreamHandler(err)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        try:
+            logging.error("bad run %s", pipe)
+            logging.error("rows %s", pipe.rows)
+            logging.error("first %r", pipe.rows[0])
+        finally:
+            root.removeHandler(handler)
+        self.assertIn("bad run", err.getvalue(), "the premise: something was logged")
+        self.assert_no_name(err.getvalue(), "logging")
+
+    def test_a_pipeline_held_by_the_caller_prints_no_name_in_its_locals(self):
+        # Only what a CALLER holds. A frame INSIDE pipeline() or build_snapshot()
+        # holds plain dicts and the site's own ingest.Contract objects, which no
+        # repr here can re-type: shown on 18 September 2026 to print every name.
+        # So the rule for PR D stands on its own: scan.py never shows locals in a
+        # traceback (no capture_locals, no show-locals handler).
+        import sys
+        import traceback
+
+        pipe = self.pipe()
+
+        def fails(pipe=pipe, rows=pipe.rows, row=pipe.rows[0]):
+            raise RuntimeError(f"bad run {pipe}")
+
+        try:
+            fails()
+        except RuntimeError:
+            text = "".join(traceback.TracebackException(
+                *sys.exc_info(), capture_locals=True).format())
+        self.assertIn("bad run", text)
+        self.assert_no_name(text, "a traceback with locals")
+
+    def test_a_row_read_back_under_older_rules_prints_no_name(self):
+        # What PR D reads from contract_snapshot before diff() resuppresses it:
+        # written the week before a rule widened, so it still holds the name.
+        name = invented.INDIVIDUALS[0][0]
+        stored = invented.snapshot_row(vendor_display=name, vendor_key=name.lower())
+        self.assertNotEqual(snapshot.resuppress(stored), stored,
+                            "the premise: today's rules withhold this name")
+        self.assert_no_name(repr(stored), "repr(SnapshotRow)")
+        self.assert_no_name(repr(diff.Record([stored], [stored])), "repr(Record)")
+
+    def test_an_event_for_a_name_the_rules_miss_prints_no_name(self):
+        # The rules miss this name, so it is published with its key, and the
+        # key is the name. It is right that it reaches the events table; it is
+        # not right that it reaches a log.
+        missed = invented.NAME_THE_RULES_MISS
+        before_rows, _ = snapshot.build_snapshot(invented.pipeline_rows(
+            [invented.source_row(vendor_name=missed)]), TODAY)
+        after_rows, _ = snapshot.build_snapshot(invented.pipeline_rows(
+            [invented.source_row(vendor_name=missed, end_date="2029-03-31")]), TODAY)
+        events, _ = diff.diff(by_key(before_rows), {}, after_rows,
+                              invented.published_of(after_rows), TODAY, base_run=7)
+        self.assertEqual(len(events), 1)
+        self.assertIn("VANTERPOOL", events[0].vendor_key.upper(), "the premise")
+        self.assert_no_name(repr(events), "repr(Event)")
+        self.assert_no_name(repr(after_rows), "repr(SnapshotRow)")
 
 
 class BuyerNameNeverArrives(unittest.TestCase):
@@ -341,10 +460,13 @@ class BuyerNameNeverArrives(unittest.TestCase):
         )
         before, _ = snapshot.build_snapshot(before_rows, TODAY)
         after, _ = snapshot.build_snapshot(after_rows, TODAY)
-        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(len(events), 1)
-        everything = (str([vars(r) for r in before + after]) + str(events)).upper()
+        # vars(), not str(): repr leaves the supplier fields out on purpose, so
+        # str(events) could not see a buyer name that reached vendor_key.
+        everything = (str([vars(r) for r in before + after])
+                      + str([vars(e) for e in events])).upper()
         self.assertNotIn("BUYER_NAME", everything)
         self.assertNotIn("SOMEBODY", everything)
 

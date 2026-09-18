@@ -34,7 +34,7 @@ class ExpiryMoved(unittest.TestCase):
         before = [snapshot_row(end_date="2027-03-31")]
         after = [snapshot_row(end_date="2028-03-31", reference="ZZ-TEST-0001-A1")]
 
-        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(len(events), 1, "the value did not change; only one event is due")
         event = only(events, diff.EXPIRY_MOVED)
@@ -50,7 +50,7 @@ class ExpiryMoved(unittest.TestCase):
         before = [snapshot_row(reference="ZZ-TEST-0001")]
         after = [snapshot_row(reference="ZZ-TEST-0001-A1", end_date="2028-03-31")]
 
-        event = only(diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)[0], diff.EXPIRY_MOVED)
+        event = only(diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)[0], diff.EXPIRY_MOVED)
 
         self.assertEqual(event.payload["ref_before"], "ZZ-TEST-0001")
         self.assertEqual(event.payload["ref_after"], "ZZ-TEST-0001-A1")
@@ -66,7 +66,7 @@ class ExpiryMoved(unittest.TestCase):
         after = [snapshot_row(end_date="2027-03-31", amendment_count=4,
                               reference="ZZ-TEST-0001-A3")]
 
-        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(events, [])
         self.assertEqual(counts.matched, 1, "the contract was matched, it just said nothing")
@@ -76,7 +76,7 @@ class ExpiryMoved(unittest.TestCase):
         before = [snapshot_row(end_date=None)]
         after = [snapshot_row(end_date="2028-03-31")]
 
-        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(events, [])
         self.assertEqual(counts.dates_unusable, 1)
@@ -87,7 +87,7 @@ class ValueChanged(unittest.TestCase):
         before = [snapshot_row(value=240_000.0)]
         after = [snapshot_row(value=310_000.0, reference="ZZ-TEST-0001-A1")]
 
-        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(len(events), 1)
         event = only(events, diff.VALUE_CHANGED)
@@ -102,14 +102,14 @@ class ValueChanged(unittest.TestCase):
             with self.subTest(delta=delta):
                 before = [snapshot_row(value=240_000.0)]
                 after = [snapshot_row(value=240_000.0 + delta)]
-                events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+                events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
                 self.assertEqual(events, [], f"${delta} is inside the tolerance")
 
     def test_fires_just_past_the_tolerance(self):
         before = [snapshot_row(value=240_000.0)]
         after = [snapshot_row(value=240_001.01)]
 
-        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(len(events), 1, "the tolerance is more than a dollar, not at least")
 
@@ -118,7 +118,7 @@ class ValueChanged(unittest.TestCase):
         before = [snapshot_row(value=None)]
         after = [snapshot_row(value=310_000.0)]
 
-        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(events, [])
         self.assertEqual(counts.values_unusable, 1)
@@ -128,7 +128,7 @@ class ContractGone(unittest.TestCase):
     def test_fires_once_when_a_contract_disappears_before_its_end_date(self):
         before = [snapshot_row(end_date=invented.days(400), value=88_000.0)]
 
-        events, counts = diff.diff(by_key(before), {}, [], invented.published_of([]), TODAY)
+        events, counts = diff.diff(by_key(before), {}, [], invented.published_of([]), TODAY, base_run=7)
 
         self.assertEqual(len(events), 1)
         event = only(events, diff.CONTRACT_GONE)
@@ -143,7 +143,7 @@ class ContractGone(unittest.TestCase):
         # were this.
         before = [snapshot_row(end_date=invented.days(-1))]
 
-        events, counts = diff.diff(by_key(before), {}, [], invented.published_of([]), TODAY)
+        events, counts = diff.diff(by_key(before), {}, [], invented.published_of([]), TODAY, base_run=7)
 
         self.assertEqual(events, [])
         self.assertEqual(counts.gone_natural, 1)
@@ -154,13 +154,13 @@ class ContractGone(unittest.TestCase):
         for offset, should_fire in ((-1, False), (0, True), (1, True)):
             with self.subTest(offset=offset):
                 before = [snapshot_row(end_date=invented.days(offset))]
-                events, _ = diff.diff(by_key(before), {}, [], invented.published_of([]), TODAY)
+                events, _ = diff.diff(by_key(before), {}, [], invented.published_of([]), TODAY, base_run=7)
                 self.assertEqual(len(events), 1 if should_fire else 0)
 
     def test_says_nothing_when_the_last_end_date_is_unknown(self):
         before = [snapshot_row(end_date=None)]
 
-        events, counts = diff.diff(by_key(before), {}, [], invented.published_of([]), TODAY)
+        events, counts = diff.diff(by_key(before), {}, [], invented.published_of([]), TODAY, base_run=7)
 
         self.assertEqual(events, [])
         self.assertEqual(counts.dates_unusable, 1)
@@ -192,7 +192,7 @@ class ContractsThatLeaveTheLiveSet(unittest.TestCase):
             )
         }
 
-        events, counts = diff.diff(by_key(before), {}, [], published, TODAY)
+        events, counts = diff.diff(by_key(before), {}, [], published, TODAY, base_run=7)
 
         self.assertEqual(
             [e.event_type for e in events], [diff.EXPIRY_MOVED],
@@ -235,7 +235,7 @@ class ContractsThatLeaveTheLiveSet(unittest.TestCase):
                 self.assertEqual(after, [], "the premise: it has left the live set")
                 self.assertIn("aa-invented::PID-0001", week2.published)
 
-                events, _ = diff.diff(by_key(before), {}, after, week2.published, TODAY)
+                events, _ = diff.diff(by_key(before), {}, after, week2.published, TODAY, base_run=7)
 
                 # Pinned exactly. "days_moved < 0" alone passes for ANY past
                 # date, including a wrong one taken from the wrong field.
@@ -262,7 +262,7 @@ class ContractsThatLeaveTheLiveSet(unittest.TestCase):
 
         self.assertEqual(len(before), 1)
         self.assertEqual(after, [])
-        events, counts = diff.diff(by_key(before), {}, after, week2.published, after_day)
+        events, counts = diff.diff(by_key(before), {}, after, week2.published, after_day, base_run=7)
 
         self.assertEqual(events, [], "a contract that simply ended produced an event")
         self.assertEqual(counts.still_published, 1)
@@ -273,7 +273,7 @@ class ContractsThatLeaveTheLiveSet(unittest.TestCase):
         before = [snapshot_row(end_date=invented.days(-1))]
 
         events, counts = diff.diff(
-            by_key(before), {}, [], invented.published_of(before), TODAY
+            by_key(before), {}, [], invented.published_of(before), TODAY, base_run=7
         )
 
         self.assertEqual(events, [])
@@ -286,7 +286,7 @@ class ContractsThatLeaveTheLiveSet(unittest.TestCase):
         # event exists for.
         before = [snapshot_row(end_date=invented.days(400))]
 
-        events, _ = diff.diff(by_key(before), {}, [], {}, TODAY)
+        events, _ = diff.diff(by_key(before), {}, [], {}, TODAY, base_run=7)
 
         self.assertEqual([e.event_type for e in events], [diff.CONTRACT_GONE])
 
@@ -302,7 +302,7 @@ class ContractsThatLeaveTheLiveSet(unittest.TestCase):
             )
         }
 
-        events, _ = diff.diff(by_key(before), {}, [], published, TODAY)
+        events, _ = diff.diff(by_key(before), {}, [], published, TODAY, base_run=7)
 
         self.assertEqual(len(events), 1)
         self.assertIsNone(events[0].vendor_key)
@@ -317,7 +317,7 @@ class ContractsThatLeaveTheLiveSet(unittest.TestCase):
             )
         }
 
-        events, counts = diff.diff(by_key(before), {}, [], published, TODAY)
+        events, counts = diff.diff(by_key(before), {}, [], published, TODAY, base_run=7)
 
         self.assertEqual(events, [])
         self.assertEqual(counts.contract_gone, 0, "published is published, reference or not")
@@ -346,7 +346,7 @@ class WhatGetsRecorded(unittest.TestCase):
                 "aa-invented", "ZZ-TEST-0001-A1", "2026-09-10", 250_000.0
             )
         }
-        events2, _ = diff.diff({self.K: week1}, recorded, [], published2, TODAY)
+        events2, _ = diff.diff({self.K: week1}, recorded, [], published2, TODAY, base_run=7)
         self.assertEqual(
             [(e.payload["from"], e.payload["to"]) for e in events2],
             [("2027-03-31", "2026-09-10")],
@@ -358,7 +358,7 @@ class WhatGetsRecorded(unittest.TestCase):
         now3 = [snapshot_row(contract_key=self.K, end_date="2028-03-31",
                              reference="ZZ-TEST-0001-A2")]
         events3, _ = diff.diff(
-            {}, recorded, now3, invented.published_of(now3), TODAY + timedelta(days=14)
+            {}, recorded, now3, invented.published_of(now3), TODAY + timedelta(days=14), base_run=7
         )
 
         self.assertEqual(
@@ -399,7 +399,7 @@ class WhatGetsRecorded(unittest.TestCase):
             )
         }
 
-        events, _ = diff.diff({}, {self.K: lapsed}, [], published, TODAY)
+        events, _ = diff.diff({}, {self.K: lapsed}, [], published, TODAY, base_run=7)
         record = diff.rows_to_record({}, {self.K: lapsed}, [], published, run_date=TODAY)
 
         self.assertEqual(events, [], "no event for a contract that was not live either week")
@@ -425,7 +425,7 @@ class WhatGetsRecorded(unittest.TestCase):
         row = snapshot_row(contract_key=self.K, end_date="2028-03-31")
 
         events, counts = diff.diff(
-            {}, {self.K: row}, [row], invented.published_of([row]), TODAY
+            {}, {self.K: row}, [row], invented.published_of([row]), TODAY, base_run=7
         )
         record = diff.rows_to_record({}, {self.K: row}, [row], invented.published_of([row]), run_date=TODAY)
 
@@ -453,7 +453,7 @@ class NewAward(unittest.TestCase):
         after = [snapshot_row(contract_key="aa-invented::PID-9999", value=85_000.0,
                               end_date="2027-06-30")]
 
-        events, counts = diff.diff({}, {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff({}, {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(len(events), 1)
         event = only(events, diff.NEW_AWARD)
@@ -471,7 +471,7 @@ class NewAward(unittest.TestCase):
         after = [snapshot_row(contract_key=key)]
 
         events, counts = diff.diff(
-            {}, {key: last_recorded}, after, invented.published_of(after), TODAY
+            {}, {key: last_recorded}, after, invented.published_of(after), TODAY, base_run=7
         )
 
         self.assertEqual(events, [])
@@ -496,7 +496,7 @@ class ContractsThatComeBack(unittest.TestCase):
                              reference="ZZ-TEST-0001-A1")]
 
         events, counts = diff.diff(
-            {}, {key: last_recorded}, back, invented.published_of(back), TODAY
+            {}, {key: last_recorded}, back, invented.published_of(back), TODAY, base_run=7
         )
 
         self.assertEqual(counts.returned, 1)
@@ -517,7 +517,7 @@ class ContractsThatComeBack(unittest.TestCase):
         now = [snapshot_row(contract_key=key, end_date="2027-03-31")]
 
         events, counts = diff.diff(
-            {key: last_week}, {key: last_year}, now, invented.published_of(now), TODAY
+            {key: last_week}, {key: last_year}, now, invented.published_of(now), TODAY, base_run=7
         )
 
         self.assertEqual(events, [], "compared against the stale row, not last week's")
@@ -535,7 +535,7 @@ class ContractsThatComeBack(unittest.TestCase):
                                 reference="ZZ-TEST-0001-A2")]
 
         events, _ = diff.diff(
-            {}, {key: lapsed}, renewed, invented.published_of(renewed), TODAY
+            {}, {key: lapsed}, renewed, invented.published_of(renewed), TODAY, base_run=7
         )
 
         moved = only(events, diff.EXPIRY_MOVED)
@@ -555,14 +555,14 @@ class ContractsThatComeBack(unittest.TestCase):
             )
         ]
 
-        events, counts = diff.diff({}, {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff({}, {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(events, [])
         self.assertEqual(counts.new_award_withheld, 1)
 
     def test_does_not_fire_for_a_contract_that_was_live_last_run(self):
         row = snapshot_row()
-        events, _ = diff.diff(by_key([row]), {}, [row], invented.published_of([row]), TODAY)
+        events, _ = diff.diff(by_key([row]), {}, [row], invented.published_of([row]), TODAY, base_run=7)
         self.assertEqual(events, [])
 
 
@@ -576,7 +576,7 @@ class OneAmendmentTwoEvents(unittest.TestCase):
         after = [snapshot_row(end_date="2028-03-31", value=310_000.0,
                               reference="ZZ-TEST-0001-A1")]
 
-        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(len(events), 2)
         moved = only(events, diff.EXPIRY_MOVED)
@@ -596,7 +596,7 @@ class TheFirstRun(unittest.TestCase):
         # arrives as a NEW_AWARD on the day tracking starts.
         current = [snapshot_row(contract_key=f"aa-invented::PID-{n:04d}") for n in range(50)]
 
-        events, counts = diff.diff({}, {}, current, invented.published_of(current), TODAY, is_baseline=True)
+        events, counts = diff.diff({}, {}, current, invented.published_of(current), TODAY, is_baseline=True, base_run=7)
 
         self.assertEqual(events, [])
         self.assertTrue(counts.baseline)
@@ -608,7 +608,7 @@ class TheFirstRun(unittest.TestCase):
         before = [snapshot_row(end_date="2027-03-31")]
         after = [snapshot_row(end_date="2028-03-31")]
 
-        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, is_baseline=True)
+        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, is_baseline=True, base_run=7)
 
         self.assertEqual(events, [])
 
@@ -647,7 +647,7 @@ class FrozenDayCounts(unittest.TestCase):
         after, _ = snapshot.build_snapshot(rows_b, second_day)
         self.assertEqual(len(before), 40)
 
-        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), second_day)
+        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), second_day, base_run=7)
 
         self.assertEqual(events, [], "a day count moving is not a contract changing")
         self.assertEqual(counts.matched, 40)
@@ -740,7 +740,7 @@ class Refusals(unittest.TestCase):
         }
         after = [before[f"aa-invented::PID-{n:04d}"] for n in range(80)]
 
-        reason, events, counts = diff.run_diff(before, {}, after, invented.published_of(after), TODAY)
+        reason, events, counts = diff.run_diff(before, {}, after, invented.published_of(after), TODAY, base_run=7, self_tests_passed=True, drift_passed=True)
 
         self.assertEqual(reason, diff.REFUSAL_LIVE_COUNT_DROP)
         self.assertEqual(events, [])
@@ -759,7 +759,7 @@ class Refusals(unittest.TestCase):
         }
         after = list(before.values())
 
-        reason, events, _ = diff.run_diff(before, {}, after, invented.published_of(after), TODAY)
+        reason, events, _ = diff.run_diff(before, {}, after, invented.published_of(after), TODAY, base_run=7, self_tests_passed=True, drift_passed=True)
 
         self.assertIsNone(reason)
         self.assertEqual(events, [])
@@ -783,12 +783,15 @@ class Refusals(unittest.TestCase):
 class DedupeKeys(unittest.TestCase):
     def test_the_same_data_twice_produces_the_same_keys(self):
         # events_dedupe_unique is what stops a re-run inserting anything new, so
-        # the key has to be a function of the data and of nothing else.
+        # the key has to be a function of the data and of the base run (the run
+        # previous_live came from, an input), and of nothing else: never the
+        # run date, never a clock. The base run went in on 18 September 2026 so
+        # that a real repeat of a change gets its own key; see diff._dedupe.
         before = [snapshot_row(end_date="2027-03-31", value=240_000.0)]
         after = [snapshot_row(end_date="2028-03-31", value=310_000.0)]
 
-        first, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
-        second, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY + timedelta(days=7))
+        first, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
+        second, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY + timedelta(days=7), base_run=7)
 
         self.assertEqual(
             [e.dedupe_key for e in first],
@@ -805,8 +808,8 @@ class DedupeKeys(unittest.TestCase):
         self.assertEqual(
             sorted(e.dedupe_key for e in first),
             [
-                "EXPIRY_MOVED|aa-invented::PID-0001|2027-03-31|2028-03-31",
-                "VALUE_CHANGED|aa-invented::PID-0001|240000.00|310000.00",
+                "EXPIRY_MOVED|aa-invented::PID-0001|2027-03-31|2028-03-31|7",
+                "VALUE_CHANGED|aa-invented::PID-0001|240000.00|310000.00|7",
             ],
         )
 
@@ -814,6 +817,8 @@ class DedupeKeys(unittest.TestCase):
         # The four shapes, written out. M2-DESIGN 5.4 gives the format as
         # "{event_type}|{contract_key or vendor_key}|{before}|{after}", and this
         # is the only place that says what before and after are for each type.
+        # Date, value and withdrawal keys end with "|{base_run}" (here 7) since
+        # 18 September 2026; NEW_AWARD's does not.
         gone_row = snapshot_row(
             contract_key="aa-invented::PID-0002", reference="ZZ-TEST-0002",
             end_date=invented.days(400),
@@ -825,21 +830,21 @@ class DedupeKeys(unittest.TestCase):
             by_key([snapshot_row(end_date="2027-03-31", value=240_000.0), gone_row]),
             {},
             [snapshot_row(end_date="2028-03-31", value=310_000.0), new_row], invented.published_of([snapshot_row(end_date="2028-03-31", value=310_000.0), new_row]),
-            TODAY,
+            TODAY, base_run=7
         )
         keys = {e.event_type: e.dedupe_key for e in events}
 
         self.assertEqual(
             keys[diff.EXPIRY_MOVED],
-            "EXPIRY_MOVED|aa-invented::PID-0001|2027-03-31|2028-03-31",
+            "EXPIRY_MOVED|aa-invented::PID-0001|2027-03-31|2028-03-31|7",
         )
         self.assertEqual(
             keys[diff.VALUE_CHANGED],
-            "VALUE_CHANGED|aa-invented::PID-0001|240000.00|310000.00",
+            "VALUE_CHANGED|aa-invented::PID-0001|240000.00|310000.00|7",
         )
         self.assertEqual(
             keys[diff.CONTRACT_GONE],
-            f"CONTRACT_GONE|aa-invented::PID-0002|{invented.days(400)}|",
+            f"CONTRACT_GONE|aa-invented::PID-0002|{invented.days(400)}||7",
             "the after half is empty because there is no after",
         )
         self.assertEqual(
@@ -850,11 +855,11 @@ class DedupeKeys(unittest.TestCase):
 
     def test_money_is_formatted_the_same_way_however_it_arrives(self):
         a, _ = diff.diff(
-            by_key([snapshot_row(value=240_000)]), {}, [snapshot_row(value=310_000)], invented.published_of([snapshot_row(value=310_000)]), TODAY
+            by_key([snapshot_row(value=240_000)]), {}, [snapshot_row(value=310_000)], invented.published_of([snapshot_row(value=310_000)]), TODAY, base_run=7
         )
         b, _ = diff.diff(
             by_key([snapshot_row(value=240_000.0)]), {}, [snapshot_row(value=310_000.00)], invented.published_of([snapshot_row(value=310_000.00)]),
-            TODAY,
+            TODAY, base_run=7
         )
         self.assertEqual(a[0].dedupe_key, b[0].dedupe_key)
         self.assertIn("240000.00", a[0].dedupe_key)
@@ -869,7 +874,7 @@ class DedupeKeys(unittest.TestCase):
         new = [snapshot_row(contract_key="aa-invented::PID-0003",
                             reference="ZZ-TEST-0003")]
 
-        events, _ = diff.diff(by_key(before + gone), {}, after + new, invented.published_of(after + new), TODAY)
+        events, _ = diff.diff(by_key(before + gone), {}, after + new, invented.published_of(after + new), TODAY, base_run=7)
 
         self.assertEqual(len(events), 3)
         for event in events:
@@ -885,7 +890,7 @@ class DedupeKeys(unittest.TestCase):
         after = [snapshot_row(vendor_key="", vendor_display="Individual supplier (name withheld)",
                               end_date="2028-03-31")]
 
-        event = only(diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)[0], diff.EXPIRY_MOVED)
+        event = only(diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)[0], diff.EXPIRY_MOVED)
 
         self.assertIsNone(event.vendor_key)
 
@@ -901,7 +906,7 @@ class EventsByType(unittest.TestCase):
     def test_it_counts_what_was_emitted(self):
         before = [snapshot_row(end_date="2027-03-31", value=240_000.0)]
         after = [snapshot_row(end_date="2028-03-31", value=310_000.0)]
-        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, _ = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
 
         self.assertEqual(
             diff.events_by_type(events),
@@ -937,7 +942,7 @@ class ANameTheRulesNowWithhold(unittest.TestCase):
 
     def test_a_contract_withdrawn_early_goes_with_no_name(self):
         before = self.stored(end_date=invented.days(400))
-        events, _ = diff.diff({before.contract_key: before}, {}, [], {}, TODAY)
+        events, _ = diff.diff({before.contract_key: before}, {}, [], {}, TODAY, base_run=7)
         self.assertEqual([e.event_type for e in events], [diff.CONTRACT_GONE])
         self.assertIsNone(events[0].vendor_key)
         self.assert_no_name(events)
@@ -946,7 +951,7 @@ class ANameTheRulesNowWithhold(unittest.TestCase):
         before = self.stored(end_date="2028-03-31")
         published = {before.contract_key: snapshot.PublishedFact(
             "aa-invented", "ZZ-TEST-0001-A1", invented.days(-7), 250_000.0)}
-        events, _ = diff.diff({before.contract_key: before}, {}, [], published, TODAY)
+        events, _ = diff.diff({before.contract_key: before}, {}, [], published, TODAY, base_run=7)
         self.assertEqual([e.event_type for e in events], [diff.EXPIRY_MOVED])
         self.assertIsNone(events[0].vendor_key)
         self.assert_no_name(events)
@@ -1010,7 +1015,7 @@ class EveryEventCanBeWrittenAndLinked(unittest.TestCase):
         for event_type, (before, after) in cases.items():
             with self.subTest(event_type=event_type):
                 events, _ = diff.diff(by_key(before), {}, after,
-                                      invented.published_of(after), TODAY)
+                                      invented.published_of(after), TODAY, base_run=7)
                 event = only(events, event_type)
                 ref = after[0].reference_number if after else before[0].reference_number
                 self.assertEqual(event.contract_ref, f"aa-invented,{ref}")
@@ -1023,14 +1028,14 @@ class NothingFromAMissingValue(unittest.TestCase):
     def test_a_value_that_disappears_is_not_a_change_to_zero(self):
         events, counts = diff.diff(by_key([snapshot_row(value=240_000.0)]), {},
                                    [snapshot_row(value=None)],
-                                   invented.published_of([snapshot_row(value=None)]), TODAY)
+                                   invented.published_of([snapshot_row(value=None)]), TODAY, base_run=7)
         self.assertEqual(events, [], "'changed to $0.00' is an invented event")
         self.assertEqual(counts.values_unusable, 1)
 
     def test_a_date_that_disappears_is_not_a_move(self):
         before = [snapshot_row(end_date="2027-03-31")]
         after = [snapshot_row(end_date=None)]
-        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY)
+        events, counts = diff.diff(by_key(before), {}, after, invented.published_of(after), TODAY, base_run=7)
         self.assertEqual(events, [])
         self.assertEqual(counts.dates_unusable, 1)
 
@@ -1055,7 +1060,7 @@ class RefusalsThroughRunDiff(unittest.TestCase):
         self.assertEqual(len(after), 100, "the premise: the live count is flat")
 
         reason, events, counts = diff.run_diff(before, {}, after,
-                                               invented.published_of(after), TODAY)
+                                               invented.published_of(after), TODAY, base_run=7, self_tests_passed=True, drift_passed=True)
 
         self.assertEqual(reason, diff.REFUSAL_GONE_RATE)
         self.assertEqual(events, [])
@@ -1067,8 +1072,10 @@ class RefusalsThroughRunDiff(unittest.TestCase):
         for flags, want in (({"drift_passed": False}, diff.REFUSAL_DRIFT),
                             ({"self_tests_passed": False}, diff.REFUSAL_SELF_TEST)):
             with self.subTest(want=want):
+                given = {"self_tests_passed": True, "drift_passed": True, **flags}
                 reason, events, _ = diff.run_diff(before, {}, after,
-                                                  invented.published_of(after), TODAY, **flags)
+                                                  invented.published_of(after), TODAY,
+                                                  base_run=7, **given)
                 self.assertEqual(reason, want)
                 self.assertEqual(events, [])
 
@@ -1115,9 +1122,9 @@ class WhatGetsRecordedMore(unittest.TestCase):
         self.assertEqual(len(record.refreshed), 1)
 
         # And diff() counts the same one rows_to_record keeps: one rule.
-        _, counts = diff.diff({before.contract_key: before}, {}, [], blank, TODAY)
+        _, counts = diff.diff({before.contract_key: before}, {}, [], blank, TODAY, base_run=7)
         self.assertEqual(counts.kept_under_watch, 1)
-        _, counts = diff.diff({ended.contract_key: ended}, {}, [], blank, TODAY)
+        _, counts = diff.diff({ended.contract_key: ended}, {}, [], blank, TODAY, base_run=7)
         self.assertEqual(counts.kept_under_watch, 0)
 
 

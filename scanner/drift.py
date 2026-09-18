@@ -48,8 +48,10 @@ invented sources and never reach GitHub.
 from __future__ import annotations
 
 import ast
+import http.client
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -642,6 +644,12 @@ def _get(url: str, timeout: int) -> bytes:
         return response.read()
 
 
+# A commit sha as the GitHub API writes it: forty lower-case hex digits, or
+# sixty-four once a repository moves to SHA-256 object names. Anything else
+# refuses, which is the safe side; this only stops that refusal being ours.
+_SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+
+
 def site_head_sha(timeout: int = 30) -> str:
     """The commit main points at right now.
 
@@ -651,13 +659,40 @@ def site_head_sha(timeout: int = 30) -> str:
     a difference that exists in neither.
     """
     body = _get(f"https://api.github.com/repos/{SITE_REPO}/commits/{SITE_BRANCH}", timeout)
-    return json.loads(body.decode("utf-8"))["sha"]
+    data = json.loads(body.decode("utf-8"))
+    sha = data.get("sha") if isinstance(data, dict) else None
+    # Checked, not trusted. Anything else here is not the commit, and a value
+    # like "main" would fetch every file from the moving branch this function
+    # exists to avoid. A JSON list or null used to escape as a TypeError.
+    if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+        raise ValueError("the site's head is not a commit sha")
+    return sha
+
+
+# What reading the site can raise. http.client.HTTPException is NOT an
+# OSError: a 200 whose body stops short of its Content-Length arrives as
+# IncompleteRead, and a garbled status line as BadStatusLine. Both used to
+# escape main() as a traceback. UnicodeDecodeError and JSONDecodeError are
+# ValueErrors.
+_UNREADABLE_SITE = (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, KeyError)
+
+# What parsing what was read can raise. A 200 can still carry something that
+# is not Python: a proxy's HTML page, a body cut mid-statement (SyntaxError,
+# IndentationError, TabError), a null byte (ValueError on Python 3.11, which
+# the workflow runs; SyntaxError from 3.12), nesting deeper than ast.parse or
+# ast.unparse will follow (RecursionError). That is a failed read, exit 2. As
+# an uncaught traceback Python exits 1, which is the code for "differs".
+_UNPARSEABLE = (SyntaxError, ValueError, RecursionError)
 
 
 def fetch_site_file(sha: str, path: str, timeout: int = 60) -> str:
+    # utf-8-sig, as Python itself reads a source file: a byte-order mark at the
+    # start (which some Windows editors write) is not part of the file. Read as
+    # plain utf-8 it made the first line unparseable, and every weekly run
+    # would have refused until someone noticed. Outside review, 18 September 2026.
     return _get(
         f"https://raw.githubusercontent.com/{SITE_REPO}/{sha}/{path}", timeout
-    ).decode("utf-8")
+    ).decode("utf-8-sig")
 
 
 def read_vendor_sources(vendor_dir: str = VENDOR) -> dict[str, str]:
@@ -683,17 +718,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         sha = site_head_sha()
         site_files = sorted({s for _, s, _, _ in WATCHED} | {s for _, s in WATCHED_DATA})
         site_sources = {name: fetch_site_file(sha, name) for name in site_files}
-    except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+    except _UNREADABLE_SITE as exc:
         print(f"drift: could not read the site. {type(exc).__name__}", file=sys.stderr)
         return 2
 
     try:
         vendor_sources = read_vendor_sources()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"drift: could not read scanner/vendor. {type(exc).__name__}", file=sys.stderr)
         return 2
 
-    differences = check_drift(site_sources, vendor_sources)
+    try:
+        differences = check_drift(site_sources, vendor_sources)
+    except _UNPARSEABLE as exc:
+        print(f"drift: could not parse what was read. {type(exc).__name__}", file=sys.stderr)
+        return 2
     if not differences:
         print(f"drift: vendor/ matches {SITE_REPO} at {sha[:7]}. "
               f"{len(WATCHED)} definitions, {len(WATCHED_DATA)} data files.")

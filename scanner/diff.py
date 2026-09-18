@@ -143,12 +143,15 @@ class Event:
     payload carries public facts only. No supplier name beyond what suppression
     already allowed through, no buyer name ever — events_no_buyer_name in
     0001_init.sql refuses the insert if one appears.
+
+    vendor_key is left out of repr: for a name the rules miss, the key IS the
+    name, lower-cased. See SnapshotRow. Equality still compares it.
     """
 
     event_type: str
     contract_key: Optional[str]
     contract_ref: Optional[str]      # "{org},{ref}" AS AT this event
-    vendor_key: Optional[str]
+    vendor_key: Optional[str] = field(repr=False)
     dedupe_key: str
     payload: dict[str, Any] = field(default_factory=dict)
 
@@ -208,9 +211,9 @@ def refusal_reason(
     not the number it did. That is the point: the check has to see the damage
     before it is committed, and the run then writes nothing at all.
     """
-    if not self_tests_passed:
+    if self_tests_passed is not True:
         return REFUSAL_SELF_TEST
-    if not drift_passed:
+    if drift_passed is not True:
         return REFUSAL_DRIFT
 
     # Both data checks need a previous run to be relative to. On the baseline
@@ -232,10 +235,17 @@ def diff(
     published: Mapping[str, PublishedFact],
     run_date: date,
     is_baseline: bool = False,
+    *,
+    base_run: Optional[int],
 ) -> tuple[list[Event], DiffCounts]:
     """Every event these snapshots justify, and the counts behind them.
 
     See the module docstring for what each of the four inputs is for.
+
+    `base_run` is the scan_runs.id previous_live comes from: the last run with
+    status ok or baseline. It goes into every date, value and withdrawal
+    event's dedupe_key; see _dedupe. Required, with no default, and refused as
+    None on any run that is not the baseline.
     """
     now_by_key = {r.contract_key: r for r in current}
     last_known = _last_known(previous_live, ever_seen)
@@ -248,6 +258,12 @@ def diff(
             current_live=len(now_by_key),
             baseline=True,
         )
+
+    if base_run is None:
+        # Fail closed, like rows_to_record's run_date. None here would give a
+        # repeat of the same change the same key again, and ON CONFLICT DO
+        # NOTHING would drop the second, real, event without a word.
+        raise ValueError("base_run is required on every run that is not the baseline")
 
     events: list[Event] = []
     tally: Counter[str] = Counter()
@@ -287,7 +303,7 @@ def diff(
             # a contract that had already lapsed arrives exactly this way.
             tally["returned"] += 1
 
-        _compare(before, now, events, tally)
+        _compare(before, now, events, tally, base_run)
 
     for key in previous_live:
         if key in now_by_key:
@@ -308,7 +324,7 @@ def diff(
             if _kept_under_watch(before, fact, run_date):
                 tally["kept_under_watch"] += 1
             if fact.reference_number:
-                _compare(before, _as_row(before, fact), events, tally)
+                _compare(before, _as_row(before, fact), events, tally, base_run)
             else:
                 tally["dates_unusable"] += 1
             continue
@@ -324,7 +340,7 @@ def diff(
             # between two real snapshots were this.
             tally["gone_natural"] += 1
             continue
-        events.append(_contract_gone(before))
+        events.append(_contract_gone(before, base_run))
         tally["contract_gone"] += 1
 
     counts = DiffCounts(
@@ -428,7 +444,8 @@ def _kept_under_watch(
 
 
 def _compare(
-    before: SnapshotRow, now: SnapshotRow, events: list[Event], tally: Counter[str]
+    before: SnapshotRow, now: SnapshotRow, events: list[Event], tally: Counter[str],
+    base_run: int,
 ) -> None:
     """EXPIRY_MOVED and VALUE_CHANGED between two states of one contract.
 
@@ -444,14 +461,14 @@ def _compare(
     if old_end is None or new_end is None:
         tally["dates_unusable"] += 1
     elif old_end != new_end:
-        events.append(_expiry_moved(before, now, old_end, new_end))
+        events.append(_expiry_moved(before, now, old_end, new_end, base_run))
         tally["expiry_moved"] += 1
 
     old_value, new_value = _as_money(before.contract_value), _as_money(now.contract_value)
     if old_value is None or new_value is None:
         tally["values_unusable"] += 1
     elif abs(new_value - old_value) > VALUE_TOLERANCE:
-        events.append(_value_changed(before, now, old_value, new_value))
+        events.append(_value_changed(before, now, old_value, new_value, base_run))
         tally["value_changed"] += 1
 
 
@@ -584,8 +601,9 @@ def run_diff(
     run_date: date,
     *,
     is_baseline: bool = False,
-    self_tests_passed: bool = True,
-    drift_passed: bool = True,
+    self_tests_passed: bool,
+    drift_passed: bool,
+    base_run: Optional[int],
 ) -> tuple[Optional[str], list[Event], DiffCounts]:
     """The diff, and the refusal decision, in the order they have to happen.
 
@@ -596,8 +614,15 @@ def run_diff(
 
     The counts survive a refusal on purpose. They are what tuning the two
     thresholds from real figures needs, and they hold no name.
+
+    The two gate flags have no default. They defaulted to True, so a caller
+    that forgot one ran as if it had passed (outside review, 18 September
+    2026). Only a literal True lets a run through: drift.main() returns 0 on a
+    match and 1 on a difference, so drift_passed=drift.main() would hand over
+    a truthy 1 exactly when drift failed. Pass drift.main() == 0.
     """
-    events, counts = diff(previous_live, ever_seen, current, published, run_date, is_baseline)
+    events, counts = diff(previous_live, ever_seen, current, published, run_date, is_baseline,
+                          base_run=base_run)
     reason = refusal_reason(
         self_tests_passed=self_tests_passed,
         drift_passed=drift_passed,
@@ -676,6 +701,19 @@ def report(counts: DiffCounts, refusal: Optional[str] = None) -> str:
 # have to be formatted the same way every time: money to two decimal places,
 # because the column is numeric(16,2) and 250000.0 and 250000.00 are the same
 # amount and would otherwise be two different keys.
+#
+# EXPIRY_MOVED, VALUE_CHANGED and CONTRACT_GONE end with "|{base_run}", the run
+# their previous state was recorded by. Outside review, 18 September 2026: the
+# constraint is global, so a value going 100k -> 150k, back, then 150k again
+# gave the second real event the first one's key, and ON CONFLICT DO NOTHING
+# dropped it without a word; the feed then showed the wrong current value. The
+# same for a contract withdrawn, back, and withdrawn again. The base run is an
+# input, not a clock: a re-run of the same week from the same base gives the
+# same keys, so the constraint still stops a re-run inserting anything. What
+# it gives up: a writer that failed to record a run's rows would re-report the
+# same change each week under new keys, loudly, instead of having it absorbed.
+# PR D's multi-week database test is what catches that. NEW_AWARD keeps its key:
+# it can fire once per contract.
 
 
 def _watch_ref(row: SnapshotRow) -> str:
@@ -698,7 +736,7 @@ def _vendor_key_or_none(row: SnapshotRow) -> Optional[str]:
 
 
 def _expiry_moved(
-    before: SnapshotRow, now: SnapshotRow, old_end: date, new_end: date
+    before: SnapshotRow, now: SnapshotRow, old_end: date, new_end: date, base_run: int
 ) -> Event:
     return Event(
         event_type=EXPIRY_MOVED,
@@ -707,7 +745,7 @@ def _expiry_moved(
         vendor_key=_vendor_key_or_none(now),
         dedupe_key=_dedupe(
             EXPIRY_MOVED, now.contract_key, old_end.isoformat(), new_end.isoformat()
-        ),
+        ) + f"|{base_run}",
         payload={
             "from": old_end.isoformat(),
             "to": new_end.isoformat(),
@@ -719,7 +757,7 @@ def _expiry_moved(
 
 
 def _value_changed(
-    before: SnapshotRow, now: SnapshotRow, old_value: float, new_value: float
+    before: SnapshotRow, now: SnapshotRow, old_value: float, new_value: float, base_run: int
 ) -> Event:
     return Event(
         event_type=VALUE_CHANGED,
@@ -728,7 +766,7 @@ def _value_changed(
         vendor_key=_vendor_key_or_none(now),
         dedupe_key=_dedupe(
             VALUE_CHANGED, now.contract_key, _money(old_value), _money(new_value)
-        ),
+        ) + f"|{base_run}",
         payload={
             "from": _money(old_value),
             "to": _money(new_value),
@@ -738,7 +776,7 @@ def _value_changed(
     )
 
 
-def _contract_gone(before: SnapshotRow) -> Event:
+def _contract_gone(before: SnapshotRow, base_run: int) -> Event:
     end = _as_date(before.end_date)
     value = _as_money(before.contract_value)
     return Event(
@@ -751,7 +789,7 @@ def _contract_gone(before: SnapshotRow) -> Event:
         # it would make the key look like it says something it does not.
         dedupe_key=_dedupe(
             CONTRACT_GONE, before.contract_key, end.isoformat() if end else "", ""
-        ),
+        ) + f"|{base_run}",
         payload={
             "last_end_date": end.isoformat() if end else None,
             "last_value": _money(value) if value is not None else None,

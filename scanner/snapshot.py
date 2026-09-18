@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 import os
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Iterable, NamedTuple, Optional
 
@@ -47,14 +47,21 @@ class SnapshotRow:
     last_seen_run. Those are the run's identity, not the contract's, and db.py
     sets them: a row's first_seen_run must survive every later run, and only a
     statement that has read the existing row can know it.
+
+    The two supplier fields are left out of repr. They are the only fields that
+    can carry a person's name: a row read back from contract_snapshot still
+    holds whatever the rules of the week it was written let through, until
+    resuppress() runs, and a name the rules miss sits in both. A repr goes
+    wherever a row is logged, asserted about or formatted into an error.
+    M2-DESIGN 7. Equality still compares them.
     """
 
     contract_key: str
     buyer_org_code: str
     reference_number: str
     buyer_org: str
-    vendor_key: str
-    vendor_display: str
+    vendor_key: str = field(repr=False)
+    vendor_display: str = field(repr=False)
     category_key: str
     contract_value: Optional[float]
     end_date: Optional[str]        # ISO, YYYY-MM-DD
@@ -86,13 +93,39 @@ class PublishedFact:
     contract_value: Optional[float]
 
 
+class UnsuppressedRow(dict):
+    """One pipeline row. A plain dict, except that printing it prints no value.
+
+    It holds the supplier's name as published, before suppression. The default
+    dict repr printed it, and so did every log line, f-string, assert message
+    and traceback-with-locals that touched the row. M2-DESIGN 7.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return f"<pipeline row: {len(self)} fields, unsuppressed, not printed>"
+
+
 class Pipeline(NamedTuple):
-    """What snapshot.pipeline hands back. A NamedTuple so it still unpacks."""
+    """What snapshot.pipeline hands back. A NamedTuple so it still unpacks.
+
+    Its repr is counts only. The default one printed every unsuppressed row, so
+    one logging.error("bad run %s", pipe) in scan.py would have put every
+    supplier name in the download into a public Actions log. str(), format(),
+    %s and %r all go through __repr__. M2-DESIGN 7.
+    """
 
     rows: list[dict[str, Any]]                       # live pipeline rows, unsuppressed
     refs: dict[tuple[str, str], str]                 # every (org, ref) -> contract_key
     conflicts: int                                   # pairs that pointed two ways
     published: dict[str, PublishedFact]              # every contract in the download
+
+    def __repr__(self) -> str:
+        return (
+            f"Pipeline({len(self.rows):,} live rows, {len(self.refs):,} references, "
+            f"{self.conflicts:,} conflicts, {len(self.published):,} published contracts)"
+        )
 
 
 @dataclass(frozen=True)
@@ -228,7 +261,8 @@ def pipeline(raw_rows: Iterable[dict[str, Any]], today: date) -> Pipeline:
         for c in deduped
     }
     live = ingest.filter_recompete(deduped, window_months=None, services_only=True)
-    return Pipeline([_as_row(c) for c in live], refs, conflicts, published)
+    rows = [UnsuppressedRow(_as_row(c)) for c in live]
+    return Pipeline(rows, refs, conflicts, published)
 
 
 def build_snapshot(

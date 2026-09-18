@@ -79,6 +79,18 @@ class TheScannerAndTheSchemaAgree(unittest.TestCase):
         check = constraint(read_migration("0001_init.sql"), "events_type_check")
         self.assertTrue(set(diff.EVENT_TYPES) <= set(quoted(check)))
 
+    def test_the_counted_event_types_are_the_ones_scan_runs_accepts(self):
+        # scan_runs_events_by_type_counts (0004) names the four types twice:
+        # the only keys allowed, and the keys a non-empty count must have. Each
+        # list must be exactly diff.EVENT_TYPES, or every week's scan_runs row
+        # is refused, or a type the scanner never counts is let in. Outside
+        # review, 18 September 2026.
+        check = constraint(read_migration("0004_scanner.sql"), "scan_runs_events_by_type_counts")
+        arrays = re.findall(r"ARRAY\[([^\]]*)\]", check)
+        self.assertEqual(len(arrays), 2, "both type lists must be found")
+        for listed in arrays:
+            self.assertEqual(sorted(re.findall(r"'([A-Z_]+)'", listed)), sorted(diff.EVENT_TYPES))
+
     def test_the_largest_amount_kept_is_the_largest_the_column_holds(self):
         # Round three, 18 September 2026: an amount the column cannot hold
         # rolled back the week. snapshot._as_float now refuses it, and its

@@ -18,8 +18,9 @@ off.
 
 from __future__ import annotations
 
+import copy
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 import diff
 import snapshot
@@ -466,6 +467,151 @@ class RefusedWeeks(unittest.TestCase):
 
         self.assertEqual(len(mine(first)), 1)
         self.assertEqual(second, [])
+
+
+def stored(events, table=None):
+    """What `INSERT ... ON CONFLICT (dedupe_key) DO NOTHING` keeps (PR D).
+
+    events_dedupe_unique in 0001_init.sql is global, not per run, so a key seen
+    in ANY earlier week is dropped without a word.
+    """
+    table = set() if table is None else table
+    kept = []
+    for e in events:
+        if e.dedupe_key not in table:
+            table.add(e.dedupe_key)
+            kept.append(e)
+    return kept
+
+
+class ARealRepeatIsItsOwnEvent(unittest.TestCase):
+    """Outside review, item 8, 18 September 2026.
+
+    A change that really happens twice must be stored twice. The key used to be
+    type|contract|from|to and nothing else, so the second 100k -> 150k had the
+    first one's key, the writer's ON CONFLICT DO NOTHING dropped it, and the
+    feed went on showing 100k. Each case below runs the real weekly loop and
+    then keeps what the database would keep.
+    """
+
+    MONDAYS = [date(2026, 10, 5) + timedelta(days=7 * i) for i in range(6)]
+
+    def setUp(self):
+        snapshot.load_site_rules()
+        self.bg = background()
+
+    def row(self, contract_date, value=100_000.0, end="2028-03-31", ref="ZZ-TEST-0001"):
+        return source_row(contract_date=contract_date, value=value, end_date=end, reference=ref)
+
+    def drive(self, weeks, flags=None):
+        loop, out = WeeklyLoop(), []
+        for i, raws in enumerate(weeks):
+            _, events, _ = loop.run(self.bg + raws, self.MONDAYS[i], **(flags or {}).get(i, {}))
+            out += mine(events)
+        return out, loop
+
+    def test_a_value_that_goes_up_down_and_up_again_is_stored_three_times(self):
+        a0 = self.row("2025-04-01")
+        up = [a0, self.row("2026-10-06", 150_000.0, ref="ZZ-TEST-0001-A1")]
+        down = up + [self.row("2026-10-13", 100_000.0, ref="ZZ-TEST-0001-A2")]
+        again = down + [self.row("2026-10-27", 150_000.0, ref="ZZ-TEST-0001-A3")]
+        events, _ = self.drive([[a0], up, down, down, again])
+        self.assertEqual(len(events), 3, "the premise: three real changes")
+        self.assertEqual(len(stored(events)), 3, [e.dedupe_key for e in events])
+
+    def test_an_end_date_that_goes_out_back_and_out_again_is_stored_three_times(self):
+        a0 = self.row("2025-04-01", end="2027-03-31")
+        out1 = [a0, self.row("2026-10-06", end="2028-03-31", ref="ZZ-TEST-0001-A1")]
+        back = out1 + [self.row("2026-10-13", end="2027-03-31", ref="ZZ-TEST-0001-A2")]
+        out2 = back + [self.row("2026-10-27", end="2028-03-31", ref="ZZ-TEST-0001-A3")]
+        events, _ = self.drive([[a0], out1, back, back, out2])
+        self.assertEqual(len(events), 3, "the premise: three real changes")
+        self.assertEqual(len(stored(events)), 3, [e.dedupe_key for e in events])
+
+    def test_withdrawn_back_and_withdrawn_again_is_stored_twice(self):
+        # With the old key the second withdrawal was dropped, and PR E's rule
+        # (a CONTRACT_GONE is not current once last_seen_run passes it) then
+        # showed a contract that had gone as present.
+        a0 = self.row("2025-04-01")
+        events, _ = self.drive([[a0], [], [a0], [a0], []])
+        self.assertEqual([e.event_type for e in events], [diff.CONTRACT_GONE] * 2)
+        self.assertEqual(len(stored(events)), 2, [e.dedupe_key for e in events])
+
+    def test_an_amendment_row_that_drops_out_and_returns_is_stored_each_time(self):
+        # No coincidence needed: the same row leaves the download and comes
+        # back. A key built from the reference number could not tell the two
+        # 100k -> 150k moves apart; the base run can.
+        a0 = self.row("2025-04-01")
+        a1 = self.row("2026-10-06", 150_000.0, ref="ZZ-TEST-0001-A1")
+        events, _ = self.drive([[a0], [a0, a1], [a0], [a0], [a0, a1]])
+        self.assertEqual(len(events), 3)
+        self.assertEqual(len(stored(events)), 3, [e.dedupe_key for e in events])
+
+    def test_a_retry_from_the_same_base_gives_the_same_keys_and_a_rerun_adds_nothing(self):
+        # What the key is FOR: running the same data again inserts nothing.
+        a0 = self.row("2025-04-01")
+        up = [a0, self.row("2026-10-06", 150_000.0, ref="ZZ-TEST-0001-A1")]
+        loop = WeeklyLoop()
+        loop.run(self.bg + [a0], self.MONDAYS[0])
+        twin = copy.deepcopy(loop)
+        _, first, _ = loop.run(self.bg + up, self.MONDAYS[1])
+        _, retry, _ = twin.run(self.bg + up, self.MONDAYS[1])
+        self.assertEqual(len(mine(first)), 1)
+        self.assertEqual([e.dedupe_key for e in first], [e.dedupe_key for e in retry])
+        _, rerun, _ = loop.run(self.bg + up, self.MONDAYS[1])
+        self.assertEqual(rerun, [])
+
+    def test_a_refused_week_then_the_same_data_is_one_withdrawal(self):
+        a0 = self.row("2025-04-01")
+        events, _ = self.drive([[a0], [], [], []], {1: {"drift_passed": False}})
+        self.assertEqual([e.event_type for e in events], [diff.CONTRACT_GONE])
+
+    def test_a_run_that_is_not_the_baseline_must_say_what_it_compares_against(self):
+        # None would put "|None" in every key, and every repeat would collide.
+        before = invented.snapshot_row(end_date="2027-03-31")
+        after = [invented.snapshot_row(end_date="2028-03-31")]
+        with self.assertRaisesRegex(ValueError, "base_run is required"):
+            diff.diff({before.contract_key: before}, {}, after,
+                      invented.published_of(after), date(2026, 10, 5), base_run=None)
+        # The baseline compares against nothing, so it needs no base.
+        events, counts = diff.diff({}, {}, after, invented.published_of(after),
+                                   date(2026, 10, 5), is_baseline=True, base_run=None)
+        self.assertEqual((events, counts.baseline), ([], True))
+
+
+class TheWriterNeverBaselinesOverASnapshot(unittest.TestCase):
+    """Outside review, item 11, 18 September 2026, kept as it is.
+
+    refusal_reason exempts a run from the two data checks when there is nothing
+    to compare against (previous_live == 0), not whenever is_baseline is set.
+    The review asked for the second. It would change nothing for this writer,
+    which never baselines with a snapshot present, as pinned here; for a writer
+    that did, it would remove the only drop check on a short download recorded
+    as the new base. What recovering from a real drop of more than 10% looks
+    like is a PR D decision, recorded in MILESTONES.
+    """
+
+    def setUp(self):
+        snapshot.load_site_rules()
+        self.bg = background()
+
+    def test_every_baseline_it_runs_has_nothing_to_compare_against(self):
+        seen = []
+        real = diff.run_diff
+
+        def spy(previous_live, *args, **kwargs):
+            seen.append((kwargs.get("is_baseline"), len(previous_live)))
+            return real(previous_live, *args, **kwargs)
+
+        diff.run_diff = spy
+        try:
+            weeks = WeeklyLoop()
+            weeks.run(self.bg, date(2026, 10, 5), drift_passed=False)   # refused first run
+            weeks.run(self.bg[:40], date(2026, 10, 12))                  # the real baseline
+            weeks.run(self.bg[:40], date(2026, 10, 19))                  # an ordinary week
+        finally:
+            diff.run_diff = real
+        self.assertEqual(seen, [(True, 0), (True, 0), (False, 40)])
 
 
 if __name__ == "__main__":

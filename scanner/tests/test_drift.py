@@ -283,7 +283,7 @@ class ARuleChangedAfterItsDefinitionRefuses(unittest.TestCase):
 
 
 class DataFiles(unittest.TestCase):
-    ALLOW = "# A comment\nRAYMOND CHABOT GRANT THORNTON\nSTEWART MCKELVEY\n"
+    ALLOW = "# A comment\nRAYMOND CHABOT GRANT THORNTON\nBRAMBLEWICK FREIGHT INC\n"
 
     def check_data(self, ours, theirs):
         return drift.check_drift(
@@ -294,11 +294,11 @@ class DataFiles(unittest.TestCase):
         )
 
     def test_a_rewritten_comment_is_not_a_change(self):
-        theirs = "# Quite a different comment\n\nRAYMOND CHABOT GRANT THORNTON\nSTEWART MCKELVEY\n"
+        theirs = "# Quite a different comment\n\nRAYMOND CHABOT GRANT THORNTON\nBRAMBLEWICK FREIGHT INC\n"
         self.assertEqual(self.check_data(self.ALLOW, theirs), [])
 
     def test_an_entry_added_on_the_site_refuses(self):
-        theirs = self.ALLOW + "RENE BLAIS LTE\n"
+        theirs = self.ALLOW + "ORVANEK TOOLING LTD\n"
         found = self.check_data(self.ALLOW, theirs)
         self.assertEqual(len(found), 1)
         self.assertIn("2 entries here against 3 on the site", found[0].detail)

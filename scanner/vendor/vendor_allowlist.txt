@@ -1,3 +1,8 @@
+# COPIED FROM  MarboCreatives/recompete-radar  vendor_allowlist.txt
+# SITE COMMIT  d09109f6abf2fda7ac287692f99e434ec4659ed6
+# SOURCE FILE  SHA-256 bfb1be45e05b0899575e777a8d1104bcabb3710e1f36e972029738ec54e93db9
+# COPIED ON    17 September 2026
+#
 # Vendors that must NEVER be treated as individual people.
 #
 # is_individual() is deliberately biased toward withholding: a false positive

@@ -268,6 +268,9 @@ class WeeklyLoop:
             previous_live, ever_seen, current, pipe.published, run_date,
             is_baseline=baseline, self_tests_passed=self_tests_passed,
             drift_passed=drift_passed,
+            # The run previous_live came from: what a real repeat of a change
+            # is told apart by, in its dedupe_key. None only on the baseline.
+            base_run=self.last_ok,
         )
         if reason is None:
             record = diff.rows_to_record(previous_live, ever_seen, current, pipe.published,

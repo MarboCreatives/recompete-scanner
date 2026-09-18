@@ -1,3 +1,8 @@
+# COPIED FROM  MarboCreatives/recompete-radar  category_merges.txt
+# SITE COMMIT  d09109f6abf2fda7ac287692f99e434ec4659ed6
+# SOURCE FILE  SHA-256 50c5d313b378f2c60aea479d42e34fe99c5a464bc33d0381b5672fd7fc00df48
+# COPIED ON    17 September 2026
+#
 # Category merges reviewed and approved by Jon, 16 September 2026.
 #
 #   from => to

@@ -18,6 +18,7 @@ rules miss — is recorded in test_suppression and is the display path's job.
 from __future__ import annotations
 
 import ast
+import hashlib
 import io
 import os
 import re
@@ -180,6 +181,80 @@ class NoWithheldNameIsCommitted(unittest.TestCase):
 
     def test_the_check_ignores_the_fixtures_and_the_watch_key_shape(self):
         self.assertEqual(self.person_shaped('"QUILLERAN, Marisol" "{org},{ref}"'), [])
+
+
+class EveryVendorFileNamesItsSource(unittest.TestCase):
+    """README: each file in vendor/ names the site commit it came from.
+
+    Until 18 September 2026 the two data files did not (outside review, item
+    13). Their header is five '#' lines, which the site's loaders and
+    drift.data_lines both skip.
+    """
+
+    VENDOR = os.path.join(SCANNER, "vendor")
+    COMMIT = re.compile(r"SITE COMMIT\s+([0-9a-f]{40})")
+    SHA = re.compile(r"SOURCE FILE\s+SHA-256 ([0-9a-f]{64})")
+    HEADER_LINES = 5
+
+    def read(self, name):
+        with open(os.path.join(self.VENDOR, name), encoding="utf-8", newline="") as fh:
+            return fh.read()
+
+    def test_each_copy_names_one_commit_and_a_hash(self):
+        commits = set()
+        copies = [n for n in sorted(os.listdir(self.VENDOR)) if n.endswith((".py", ".txt"))]
+        self.assertEqual(len(copies), 5, "ingest, names, categories and the two data files")
+        for name in copies:
+            text = self.read(name)
+            with self.subTest(file=name):
+                c, s = self.COMMIT.search(text), self.SHA.search(text)
+                self.assertIsNotNone(c, "names no site commit")
+                self.assertIsNotNone(s, "names no SHA-256")
+                commits.add(c.group(1))
+        self.assertEqual(len(commits), 1, "every copy is from the same site commit")
+
+    def test_a_data_file_is_the_site_file_under_its_header(self):
+        # The recorded hash is of the site's file (measured against the site at
+        # the named commit on 18 September 2026). Take the header off and the
+        # rest must be that file byte for byte, so an edit made here fails even
+        # in a comment, which drift.py ignores. Stable on Windows only because
+        # .gitattributes checks these files out with LF endings.
+        for name in ("vendor_allowlist.txt", "category_merges.txt"):
+            lines = self.read(name).splitlines(keepends=True)
+            head, body = lines[:self.HEADER_LINES], "".join(lines[self.HEADER_LINES:])
+            with self.subTest(file=name):
+                self.assertTrue(all(line.startswith("#") for line in head),
+                                "a header line the loaders would read as an entry")
+                recorded = self.SHA.search("".join(head)).group(1)
+                self.assertEqual(hashlib.sha256(body.encode("utf-8")).hexdigest(), recorded)
+
+
+class OnlyTheNamedRealOrganisationIsAFixture(unittest.TestCase):
+    """Fixtures are invented (README; M2-DESIGN 4). tests/invented.py names ONE
+    real allowlisted company, ALLOWLISTED_ORGANISATION, on purpose. No other
+    real allowlist entry may appear in a test file: two did until 18 September
+    2026 (outside review, item 13). The committed-name guard above cannot see
+    them, because it skips allowlist entries by design. Counts only."""
+
+    def test_no_other_real_allowlist_entry_is_test_data(self):
+        snapshot.load_site_rules()
+        sanctioned = names._norm_name(invented.ALLOWLISTED_ORGANISATION)
+        others = set(names.VENDOR_ALLOWLIST) - {sanctioned}
+        self.assertTrue(others, "the premise: the allowlist holds other entries")
+        guard = NoWithheldNameIsCommitted()
+        tests_dir = os.path.dirname(os.path.abspath(__file__))
+        hits = 0
+        for name in sorted(os.listdir(tests_dir)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(tests_dir, name), encoding="utf-8") as fh:
+                pieces = guard.pieces(fh.read())
+            for piece in pieces:
+                for line in piece.split("\n"):
+                    flat = " " + " ".join(re.findall(r"[\w&'.-]+", names._norm_name(line))) + " "
+                    hits += sum(1 for e in others if f" {e} " in flat)
+        # pieces() offers each literal twice (quoted and raw), so one use counts 2.
+        self.assertEqual(hits, 0, f"{hits // 2} use(s) of a real allowlist entry as test data")
 
 
 if __name__ == "__main__":
