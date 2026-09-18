@@ -272,11 +272,33 @@ const CLOSED_WORLD = [
     want: [],
   },
   {
-    what: 'schema privileges reaching scanner_writer are USAGE on public only; nobody but the owner may CREATE',
+    what: 'schema privileges reaching scanner_writer or PUBLIC are USAGE on public only',
     sql: `select format('%s %s %s%s', n.nspname, ${WHO}, x.privilege_type, ${GRANTABLE}) as x
           from pg_namespace n cross join lateral aclexplode(n.nspacl) x
           where x.grantee in (0, 'scanner_writer'::regrole) and ${USER_SCHEMA}`,
     want: ['public PUBLIC USAGE', 'public scanner_writer USAGE'],
+  },
+  {
+    // Any role, not only the two above: a schema created by a role the scanner
+    // could become, or placed first on the search path, would capture the
+    // app's unqualified table names. Review of the fixes, 18 September 2026.
+    what: 'nobody but a schema\'s owner may CREATE in it',
+    sql: `select format('%s %s', n.nspname, ${WHO}) as x
+          from pg_namespace n cross join lateral aclexplode(n.nspacl) x
+          where x.privilege_type = 'CREATE' and x.grantee <> n.nspowner and ${USER_SCHEMA}`,
+    want: [],
+  },
+  {
+    // A NULL datacl means the defaults: PUBLIC may CONNECT and make TEMPORARY
+    // tables. Anything more, CREATE above all, lets scanner_writer make its own
+    // schema. pg_shdepend below sees only grants that name scanner_writer.
+    what: 'PUBLIC holds nothing on this database beyond CONNECT and TEMPORARY',
+    sql: `select format('%s %s', ${WHO}, x.privilege_type) as x
+          from pg_database d
+          cross join lateral aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) x
+          where d.datname = current_database() and x.grantee = 0
+            and x.privilege_type not in ('CONNECT', 'TEMPORARY')`,
+    want: [],
   },
   {
     // A SECURITY DEFINER function runs with its owner's rights, and functions
@@ -360,8 +382,10 @@ test('no migration can give a role a way to sign in, or change an existing role'
       `${f} could give a role a way to sign in`)
     // 0004 must never "normalise" the role: it runs against the cluster again
     // whenever recompete_test is rebuilt, and would switch the production
-    // scanner off (see 0004's role comment).
-    assert.doesNotMatch(code, /\bALTER\s+ROLE\b/i, `${f} changes an existing role`)
+    // scanner off (see 0004's role comment). Every spelling: ALTER USER and
+    // ALTER GROUP are other names for ALTER ROLE, and the first version of this
+    // check saw only one of them (review of the fixes, 18 September 2026).
+    assert.doesNotMatch(code, /\b(ALTER|DROP)\s+(ROLE|USER|GROUP)\b/i, `${f} changes an existing role`)
   }
 })
 
@@ -598,7 +622,10 @@ test('scan_runs refuses events_by_type that is not an object of counts', async (
     // The first version of this case tried only three non-objects, and it
     // passed while a supplier's name could be stored here as a value or as a
     // key (outside review, 18 September 2026). Each line below is refused by
-    // exactly one clause of the constraint, so each clause is seen to work.
+    // at least one clause of the constraint, and every clause is the ONLY one
+    // refusing at least one line, so each clause is seen to work. (An earlier
+    // wording said each line is refused by exactly one; four are refused by
+    // two or three. Measured, 18 September 2026.)
     const bad = [
       '[]', '"EXPIRY_MOVED"', '3',                                   // not an object
       '{"vendor": "Invented Supplier Inc"}',                          // a name as a value
