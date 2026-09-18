@@ -30,7 +30,16 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
 import { connectToTestDatabase } from './helpers.mjs'
+
+const MIGRATIONS = new URL('../db/migrations/', import.meta.url)
+const MIGRATION_0004 = readFileSync(new URL('0004_scanner.sql', MIGRATIONS), 'utf8')
+
+/** A migration's SQL with its -- comments removed, so prose cannot trip a text check. */
+function codeOf(sql) {
+  return sql.split('\n').map((line) => line.replace(/--.*$/, '')).join('\n')
+}
 
 // The literal the site substitutes for a private individual's name
 // (build_site.PERSON_LABEL), which contract_snapshot_withheld_pairing spells
@@ -56,7 +65,16 @@ const CHECK_VIOLATION = '23514'
 const FOREIGN_KEY_VIOLATION = '23503'
 const UNIQUE_VIOLATION = '23505'
 
-/** FK-safe order: refs point at snapshot, both point at runs, events point at runs. */
+/**
+ * FK-safe order: refs point at snapshot, both point at runs, events point at runs.
+ *
+ * `delete from events` has no WHERE: it empties the whole table, including rows
+ * another test file wrote. That is safe only because the test files run one at
+ * a time (`--test-concurrency=1` in app/package.json, which
+ * tests/suite-order.test.mjs pins); helpers.truncateAll, used by every other
+ * test file that writes to the database, relies on the same thing. Node runs
+ * test files in parallel without it, so any other runner must pass the flag.
+ */
 async function clearScannerTables(client) {
   await client.query('delete from events')
   await client.query('delete from contract_refs')
@@ -153,6 +171,7 @@ test('the whole privilege matrix is what 0004 says it is, table by table', async
       watch_items: '',
       alert_preferences: '',
       event_deliveries: '',
+      schema_migrations: '',
       contract_snapshot: 'SELECT INSERT UPDATE',
       contract_refs: 'SELECT INSERT UPDATE',
       scan_runs: 'SELECT INSERT UPDATE',
@@ -168,7 +187,8 @@ test('the whole privilege matrix is what 0004 says it is, table by table', async
                   has_table_privilege('scanner_writer', $1, 'DELETE')   as "DELETE",
                   has_table_privilege('scanner_writer', $1, 'TRUNCATE') as "TRUNCATE",
                   has_table_privilege('scanner_writer', $1, 'REFERENCES') as "REFERENCES",
-                  has_table_privilege('scanner_writer', $1, 'TRIGGER')  as "TRIGGER"`,
+                  has_table_privilege('scanner_writer', $1, 'TRIGGER')  as "TRIGGER",
+                  has_table_privilege('scanner_writer', $1, 'MAINTAIN') as "MAINTAIN"`,
           [table],
         )
       ).rows[0]
@@ -179,6 +199,194 @@ test('the whole privilege matrix is what 0004 says it is, table by table', async
       assert.equal(got, want, `privileges on ${table}`)
     }
   })
+})
+
+// Every schema a later migration could add, and none of PostgreSQL's own.
+const USER_SCHEMA = `n.nspname <> 'information_schema' and n.nspname not like 'pg\\_%'`
+const WHO = `case when x.grantee = 0 then 'PUBLIC' else x.grantee::regrole::text end`
+const GRANTABLE = `case when x.is_grantable then ' WITH GRANT OPTION' else '' end`
+
+// The whole of what the role holds, read from the catalogs rather than from a
+// hand-kept list. Outside review, 18 September 2026: the matrix above names ten
+// tables, so a grant on any other table, a column grant, a default privilege or
+// a membership went unseen. The matrix stays, because has_table_privilege counts
+// EFFECTIVE privileges and so sees a membership such as pg_read_all_data that no
+// ACL listing shows; the two see different things.
+//
+// information_schema.column_privileges is deliberately not used: it expands
+// every table grant per column, so it lists 97 rows on a correct database.
+// pg_attribute.attacl holds only explicit column grants.
+const CLOSED_WORLD = [
+  {
+    what: 'scanner_writer carries no elevated attribute',
+    sql: `select format('super=%s createdb=%s createrole=%s replication=%s bypassrls=%s',
+                 rolsuper::text, rolcreatedb::text, rolcreaterole::text,
+                 rolreplication::text, rolbypassrls::text) as x
+          from pg_roles where rolname = 'scanner_writer'`,
+    want: ['super=false createdb=false createrole=false replication=false bypassrls=false'],
+  },
+  {
+    what: 'scanner_writer is a member of no role: a membership brings that role\'s privileges',
+    sql: `select roleid::regrole::text as x from pg_auth_members where member = 'scanner_writer'::regrole`,
+    want: [],
+  },
+  {
+    what: 'the table, view and sequence grants reaching scanner_writer, directly or through PUBLIC, are exactly 0004\'s',
+    sql: `select format('%s.%s %s %s%s', n.nspname, c.relname, ${WHO}, x.privilege_type, ${GRANTABLE}) as x
+          from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+          cross join lateral aclexplode(c.relacl) x
+          where x.grantee in (0, 'scanner_writer'::regrole) and ${USER_SCHEMA}`,
+    want: [
+      'public.contract_refs scanner_writer INSERT', 'public.contract_refs scanner_writer SELECT',
+      'public.contract_refs scanner_writer UPDATE',
+      'public.contract_snapshot scanner_writer INSERT', 'public.contract_snapshot scanner_writer SELECT',
+      'public.contract_snapshot scanner_writer UPDATE',
+      'public.events scanner_writer INSERT', 'public.events scanner_writer SELECT',
+      'public.scan_runs scanner_writer INSERT', 'public.scan_runs scanner_writer SELECT',
+      'public.scan_runs scanner_writer UPDATE',
+      'public.scan_runs_id_seq scanner_writer USAGE',
+    ],
+  },
+  {
+    what: 'no column-level grant reaches scanner_writer or PUBLIC',
+    sql: `select format('%s.%s %s %s', c.relname, a.attname, ${WHO}, x.privilege_type) as x
+          from pg_attribute a
+          join pg_class c on c.oid = a.attrelid
+          join pg_namespace n on n.oid = c.relnamespace
+          cross join lateral aclexplode(a.attacl) x
+          where x.grantee in (0, 'scanner_writer'::regrole) and ${USER_SCHEMA}`,
+    want: [],
+  },
+  {
+    // PUBLIC only for tables and sequences: a default ACL on functions or types
+    // carries PUBLIC EXECUTE or USAGE as normal. Neon's own cloud_admin entries
+    // grant to neon_superuser, so a plain row count would fail here.
+    what: 'no ALTER DEFAULT PRIVILEGES hands future tables to scanner_writer or PUBLIC',
+    sql: `select format('%s %s %s %s %s', d.defaclrole::regrole,
+                   case when d.defaclnamespace = 0 then '*' else d.defaclnamespace::regnamespace::text end,
+                   d.defaclobjtype, ${WHO}, x.privilege_type) as x
+          from pg_default_acl d cross join lateral aclexplode(d.defaclacl) x
+          where x.grantee = 'scanner_writer'::regrole
+             or (x.grantee = 0 and d.defaclobjtype in ('r', 'S'))`,
+    want: [],
+  },
+  {
+    what: 'schema privileges reaching scanner_writer are USAGE on public only; nobody but the owner may CREATE',
+    sql: `select format('%s %s %s%s', n.nspname, ${WHO}, x.privilege_type, ${GRANTABLE}) as x
+          from pg_namespace n cross join lateral aclexplode(n.nspacl) x
+          where x.grantee in (0, 'scanner_writer'::regrole) and ${USER_SCHEMA}`,
+    want: ['public PUBLIC USAGE', 'public scanner_writer USAGE'],
+  },
+  {
+    // A SECURITY DEFINER function runs with its owner's rights, and functions
+    // keep PostgreSQL's default PUBLIC EXECUTE. One in public let the role read
+    // users while every other check here passed (measured). There are none today.
+    what: 'no SECURITY DEFINER function in a user schema is executable by scanner_writer',
+    sql: `select p.oid::regprocedure::text as x
+          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where p.prosecdef and has_function_privilege('scanner_writer', p.oid, 'EXECUTE')
+            and ${USER_SCHEMA}`,
+    want: [],
+  },
+  {
+    // pg_shdepend records every object whose owner or ACL names the role, of
+    // every kind. The backstop for the kinds not listed above. A grant on
+    // ANOTHER database is left out: pg_database is shared across the cluster,
+    // and production's own grants must not turn this suite red.
+    what: 'scanner_writer owns nothing and appears in no other ACL in this database',
+    sql: `select format('%s %s %s %s', s.classid::regclass,
+                   case when s.classid = 'pg_class'::regclass then
+                          (select n.nspname || '.' || c.relname from pg_class c
+                             join pg_namespace n on n.oid = c.relnamespace where c.oid = s.objid)
+                        when s.classid = 'pg_namespace'::regclass then
+                          (select nspname from pg_namespace where oid = s.objid)
+                        else s.objid::text end,
+                   s.objsubid, s.deptype) as x
+          from pg_shdepend s
+          where s.refclassid = 'pg_authid'::regclass and s.refobjid = 'scanner_writer'::regrole
+            and s.dbid in (0, (select oid from pg_database where datname = current_database()))
+            and not (s.classid = 'pg_database'::regclass
+                     and s.objid <> (select oid from pg_database where datname = current_database()))`,
+    want: [
+      'pg_class public.contract_refs 0 a', 'pg_class public.contract_snapshot 0 a',
+      'pg_class public.events 0 a', 'pg_class public.scan_runs 0 a',
+      'pg_class public.scan_runs_id_seq 0 a', 'pg_namespace public 0 a',
+    ],
+  },
+]
+
+test('scanner_writer holds exactly what 0004 grants, and nothing else', async () => {
+  await withScannerDatabase(async (client) => {
+    for (const { what, sql, want } of CLOSED_WORLD) {
+      const got = (await client.query(sql)).rows.map((r) => r.x).sort()
+      assert.deepEqual(got, [...want].sort(), what)
+    }
+  })
+})
+
+test('scanner_writer cannot sign in yet', async () => {
+  await withScannerDatabase(async (client) => {
+    const r = (
+      await client.query(`select rolcanlogin from pg_roles where rolname = 'scanner_writer'`)
+    ).rows
+    assert.equal(r.length, 1, 'scanner_writer does not exist')
+    // A password on a NOLOGIN role cannot be used, so this alone is enough.
+    assert.equal(
+      r[0].rolcanlogin,
+      false,
+      'scanner_writer can sign in. Until PR D this must be false: 0004 promises that ' +
+        'applying it cannot put a usable credential anywhere. WHEN PR D RUNS THE PLANNED ' +
+        'out-of-band ALTER ROLE scanner_writer WITH LOGIN (M2-DESIGN section 12, action 3), ' +
+        'this turns true by design, on every database, because the role is cluster-wide: ' +
+        'the change that takes that step changes this test with it. The migration-text ' +
+        'check below keeps guarding the migrations after that.',
+    )
+  })
+})
+
+test('no migration can give a role a way to sign in, or change an existing role', () => {
+  // The permanent half of "applying this file cannot put a usable credential
+  // anywhere". The live check above will flip when PR D gives the role LOGIN;
+  // this one never should. Comments are stripped first, because 0004's header
+  // quotes the out-of-band statement on purpose. \bLOGIN\b cannot match inside
+  // NOLOGIN. If a migration ever needs one of these words for something that is
+  // not a role, adjust the pattern for that use only.
+  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql')).sort()
+  assert.ok(files.length >= 4, 'the migrations must actually be read')
+  for (const f of files) {
+    const code = codeOf(readFileSync(new URL(f, MIGRATIONS), 'utf8'))
+    assert.doesNotMatch(code, /\bLOGIN\b|\bPASSWORD\b|\bCREATE\s+USER\b(?!\s+MAPPING)/i,
+      `${f} could give a role a way to sign in`)
+    // 0004 must never "normalise" the role: it runs against the cluster again
+    // whenever recompete_test is rebuilt, and would switch the production
+    // scanner off (see 0004's role comment).
+    assert.doesNotMatch(code, /\bALTER\s+ROLE\b/i, `${f} changes an existing role`)
+  }
+})
+
+test('the migrating role can become scanner_writer but does not inherit its grants', async () => {
+  await withScannerDatabase(async (client) => {
+    // pg_has_role USAGE is true for every path by which current_user would
+    // inherit the role's privileges, so a later INHERIT grant made any other
+    // way is caught too. The first 0004 granted INHERIT without saying so
+    // (outside review, 18 September 2026).
+    const r = (
+      await client.query(`select pg_has_role(current_user, 'scanner_writer', 'SET')   as can_set,
+                                 pg_has_role(current_user, 'scanner_writer', 'USAGE') as inherits`)
+    ).rows[0]
+    assert.equal(r.can_set, true, 'the suite cannot SET ROLE scanner_writer, so the role cases test nothing')
+    assert.equal(r.inherits, false, 'the migrating role silently carries scanner_writer\'s grants')
+  })
+})
+
+test('0004 absorbs another database creating scanner_writer at the same moment', () => {
+  // Text only: proving it by behaviour means committing a CREATE ROLE from a
+  // second session, which is a change to the production cluster. The wait was
+  // measured to end in unique_violation, not duplicate_object, so both are named.
+  const block = codeOf(MIGRATION_0004).match(/DO \$\$[\s\S]*?CREATE ROLE scanner_writer NOLOGIN;[\s\S]*?\n\$\$;/)
+  assert.ok(block, 'the DO block that creates scanner_writer was not found')
+  assert.match(block[0], /EXCEPTION\s+WHEN\s+duplicate_object\s+OR\s+unique_violation\s+THEN\s+NULL;/)
 })
 
 test('scanner_writer is refused every table that describes a person', async () => {
@@ -381,27 +589,79 @@ test('scan_runs refuses a finish before its start, and a negative count', async 
   })
 })
 
+// What scanner/diff.events_by_type() really writes: every type, zeros included.
+const ALL_ZERO = '{"EXPIRY_MOVED": 0, "VALUE_CHANGED": 0, "CONTRACT_GONE": 0, "NEW_AWARD": 0}'
+const ONE_EACH = '{"EXPIRY_MOVED": 1, "VALUE_CHANGED": 1, "CONTRACT_GONE": 1, "NEW_AWARD": 1}'
+
 test('scan_runs refuses events_by_type that is not an object of counts', async () => {
   await withScannerDatabase(async (client) => {
-    for (const bad of ['[]', '"EXPIRY_MOVED"', '3']) {
+    // The first version of this case tried only three non-objects, and it
+    // passed while a supplier's name could be stored here as a value or as a
+    // key (outside review, 18 September 2026). Each line below is refused by
+    // exactly one clause of the constraint, so each clause is seen to work.
+    const bad = [
+      '[]', '"EXPIRY_MOVED"', '3',                                   // not an object
+      '{"vendor": "Invented Supplier Inc"}',                          // a name as a value
+      '{"Invented Supplier Inc": 1}', '{"buyer_name": 1}',            // a name as a key
+      ALL_ZERO.replace('{', '{"Invented Supplier Inc": 1, '),         // ...beside all four types
+      '{"POSSIBLE_RECOMPETE": 1}',                                    // not a type the scanner counts
+      '{"EXPIRY_MOVED": 2}',                                          // some types but not all
+      ALL_ZERO.replace('0}', '"3"}'),                                 // a count as a string
+      ALL_ZERO.replace('0}', '{"vendor": "Invented Supplier Inc"}}'), // nested
+      ALL_ZERO.replace('0}', '[1]}'),                                 // an array (lax would pass it)
+      ALL_ZERO.replace('0}', '-1}'),                                  // negative
+      ALL_ZERO.replace('0}', '1.5}'),                                 // not whole
+      ALL_ZERO.replace('0}', 'null}'),
+    ]
+    for (const value of bad) {
       assert.equal(
         await refusalCode(
           client,
           `insert into scan_runs (status, events_by_type) values ('ok', $1::jsonb)`,
+          [value],
+        ),
+        CHECK_VIOLATION,
+        `events_by_type accepted ${value}, which is not a map of counts`,
+      )
+    }
+    for (const good of ['{}', ALL_ZERO, ONE_EACH, ONE_EACH.replace('1}', '25099}')]) {
+      assert.equal(
+        await refusalCode(
+          client,
+          `insert into scan_runs (status, events_by_type) values ('ok', $1::jsonb)`,
+          [good],
+        ),
+        null,
+        `events_by_type refused ${good}, which is what the scanner writes`,
+      )
+    }
+  })
+})
+
+test('scan_runs refuses a reporting period that is not a fiscal quarter', async () => {
+  await withScannerDatabase(async (client) => {
+    for (const bad of ['Invented Supplier Inc', '2025-2026-Q5', '2025-26-Q4', '2025-2026-Q4 ', '']) {
+      assert.equal(
+        await refusalCode(
+          client,
+          `insert into scan_runs (status, newest_reporting_period) values ('ok', $1)`,
           [bad],
         ),
         CHECK_VIOLATION,
-        `events_by_type accepted ${bad}, which is not a map of counts`,
+        `newest_reporting_period accepted "${bad}"`,
       )
     }
-    assert.equal(
-      await refusalCode(
-        client,
-        `insert into scan_runs (status, events_by_type)
-         values ('ok', '{"EXPIRY_MOVED": 2}'::jsonb)`,
-      ),
-      null,
-    )
+    for (const good of ['2025-2026-Q4', null]) {
+      assert.equal(
+        await refusalCode(
+          client,
+          `insert into scan_runs (status, newest_reporting_period) values ('ok', $1)`,
+          [good],
+        ),
+        null,
+        `newest_reporting_period refused ${good}`,
+      )
+    }
   })
 })
 
@@ -541,7 +801,10 @@ test('contract_snapshot will not point at a run that does not exist', async () =
     // genuinely absent AND still in the right order relative to the live one.
     const gone = await makeRun(client)
     const alive = await makeRun(client, 'ok')
-    assert.ok(gone < alive, 'bigserial should be handing out increasing ids')
+    // bigint ids arrive as strings, and '9' < '10' is false as text: this
+    // failed the day a rebuilt table's ids crossed from 9 to 10 (18 September
+    // 2026). Compared as numbers.
+    assert.ok(BigInt(gone) < BigInt(alive), 'bigserial should be handing out increasing ids')
 
     await client.query('delete from scan_runs where id = $1', [gone])
     assert.equal(
@@ -555,7 +818,7 @@ test('contract_snapshot will not point at a run that does not exist', async () =
 
     const alsoGone = await makeRun(client, 'ok')
     await client.query('delete from scan_runs where id = $1', [alsoGone])
-    assert.ok(alive < alsoGone, 'the second missing id must be the LATER of the pair')
+    assert.ok(BigInt(alive) < BigInt(alsoGone), 'the second missing id must be the LATER of the pair')
     assert.equal(
       await insertSnapshot(
         client,
@@ -697,6 +960,23 @@ test('events will not point at a run that does not exist', async () => {
          values ('VALUE_CHANGED', 'org-a,REF-001', 'k-badrun', now(), 9999999)`,
       ),
       FOREIGN_KEY_VIOLATION,
+    )
+  })
+})
+
+test('contract_snapshot does not make the pair unique, because it can repeat', async () => {
+  await withScannerDatabase(async (client) => {
+    // Outside review, 18 September 2026, asked whether the pair should be unique
+    // here as it is in contract_refs. It must not be: see the comment above
+    // contract_snapshot in 0004. A watch resolves through contract_refs, whose
+    // primary key is the pair; this row's reference is only the latest one.
+    const runId = await makeRun(client)
+    assert.equal(await insertSnapshot(client, snapshotRow(runId)), null)
+    assert.equal(
+      await insertSnapshot(client, snapshotRow(runId, { contract_key: 'org-a::PID-002' })),
+      null,
+      'a second contract under the same (buyer_org_code, reference_number) was refused; ' +
+        'on real data that rolls back the whole week',
     )
   })
 })

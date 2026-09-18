@@ -33,6 +33,11 @@ const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'db',
 // One arbitrary but fixed number. Two builds cannot migrate at once.
 const ADVISORY_LOCK_KEY = 8571394
 
+// Sent first inside every file's transaction; see where it is used.
+// tests/migrate-lock.test.mjs reads this line as TEXT and runs its value.
+// Not exported: importing this script would run the migration.
+const LOCK_TIMEOUT = "set local lock_timeout = '3s'"
+
 function fail(sentence, code) {
   console.error('')
   console.error('MIGRATION FAILED')
@@ -142,6 +147,16 @@ try {
     console.log(`  ${name}: applying`)
     try {
       await client.query('begin')
+      // Bound the wait for a lock. An ALTER TABLE that queues behind one open
+      // reader makes EVERY later reader of that table queue behind it, and the
+      // file holds its locks until COMMIT. So a migration that cannot get its
+      // lock in 3 seconds gives up: this file rolls back, the build fails and
+      // can be retried, and the site keeps serving. LOCAL, because every file
+      // is applied on this one connection; a plain SET would outlive this
+      // transaction. A file that needs longer can say so with its own SET LOCAL.
+      // Outside review, 18 September 2026; the queue was measured on
+      // recompete_test.
+      await client.query(LOCK_TIMEOUT)
       await client.query(text)
       await client.query('insert into schema_migrations (name, checksum) values ($1, $2)', [
         name,
