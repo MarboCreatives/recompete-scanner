@@ -16,6 +16,15 @@ __pycache__/
 scanner/snapshots/*.json
 scanner/snapshots/*.csv
 
+# The pipeline file holds the supplier names the site withholds, and this
+# repository is public. scanner/vendor/ingest.py is a copy of the site's ingest,
+# and run by hand with --full it writes both of these into whatever folder it
+# was run from. The scanner itself never writes them (M2-DESIGN 7), so this is
+# the guard against a person doing it and then `git add .`. Unanchored on
+# purpose: ignored wherever they land.
+recompete_pipeline.json
+recompete.db
+
 # Node (app/) has its own .gitignore; this covers anything at the root.
 node_modules/
 
