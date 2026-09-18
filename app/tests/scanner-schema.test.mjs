@@ -417,7 +417,7 @@ test('contract_snapshot refuses half-applied suppression, both ways round', asyn
     assert.equal(
       await insertSnapshot(
         client,
-        snapshotRow(runId, { vendor_key: '', vendor_display: 'Dana Morgan Fields' }),
+        snapshotRow(runId, { vendor_key: '', vendor_display: 'Dana Quilleran' }),
       ),
       CHECK_VIOLATION,
       'a blank vendor_key with a real name means suppression blanked the key and ' +
@@ -429,7 +429,7 @@ test('contract_snapshot refuses half-applied suppression, both ways round', asyn
     assert.equal(
       await insertSnapshot(
         client,
-        snapshotRow(runId, { vendor_key: 'dana morgan fields', vendor_display: PERSON_LABEL }),
+        snapshotRow(runId, { vendor_key: 'dana quilleran', vendor_display: PERSON_LABEL }),
       ),
       CHECK_VIOLATION,
     )
