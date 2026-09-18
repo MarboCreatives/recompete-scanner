@@ -686,13 +686,21 @@ _UNPARSEABLE = (SyntaxError, ValueError, RecursionError)
 
 
 def fetch_site_file(sha: str, path: str, timeout: int = 60) -> str:
-    # utf-8-sig, as Python itself reads a source file: a byte-order mark at the
-    # start (which some Windows editors write) is not part of the file. Read as
-    # plain utf-8 it made the first line unparseable, and every weekly run
-    # would have refused until someone noticed. Outside review, 18 September 2026.
+    # Each file is read the way the thing that uses it reads it.
+    #
+    # A .py file: utf-8-sig, as Python reads a source file. A byte-order mark at
+    # the start (some Windows editors write one) is not part of the program.
+    # Read as plain utf-8 it made the first line unparseable, and every weekly
+    # run would have refused until someone noticed. Outside review, 18 Sep 2026.
+    #
+    # A data file: plain utf-8, BOM kept, because the site's own loaders open
+    # them with encoding="utf-8" and keep it, so a BOM changes what the site
+    # loads. Stripping it here made drift say "same" when the site read a
+    # different first line. Review of the fixes, 18 September 2026.
+    encoding = "utf-8-sig" if path.endswith(".py") else "utf-8"
     return _get(
         f"https://raw.githubusercontent.com/{SITE_REPO}/{sha}/{path}", timeout
-    ).decode("utf-8-sig")
+    ).decode(encoding)
 
 
 def read_vendor_sources(vendor_dir: str = VENDOR) -> dict[str, str]:

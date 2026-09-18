@@ -702,8 +702,13 @@ def report(counts: DiffCounts, refusal: Optional[str] = None) -> str:
 # because the column is numeric(16,2) and 250000.0 and 250000.00 are the same
 # amount and would otherwise be two different keys.
 #
-# EXPIRY_MOVED, VALUE_CHANGED and CONTRACT_GONE end with "|{base_run}", the run
-# their previous state was recorded by. Outside review, 18 September 2026: the
+# EXPIRY_MOVED, VALUE_CHANGED and CONTRACT_GONE end with "|{base_run}": the last
+# run with status ok or baseline before this one, the run previous_live comes
+# from. It is NOT always the run that wrote the "before" row: a contract that
+# comes back after an absence is compared against an older row. (An earlier
+# wording of this comment said otherwise; review of the fixes, 18 September
+# 2026.) What matters is that it differs between two real occurrences of the
+# same change and is the same for a re-run. Outside review, 18 September 2026: the
 # constraint is global, so a value going 100k -> 150k, back, then 150k again
 # gave the second real event the first one's key, and ON CONFLICT DO NOTHING
 # dropped it without a word; the feed then showed the wrong current value. The

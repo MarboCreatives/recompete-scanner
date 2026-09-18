@@ -64,6 +64,32 @@ def committed_files():
                 yield os.path.join(root, name)
 
 
+def literal_parts(token_text):
+    """The text of one STRING token: its value, or an f-string's literal parts.
+
+    On Python 3.12 and later an f-string arrives as FSTRING_MIDDLE tokens, and
+    pieces() reads those. Before 3.12, which M2-DESIGN 9 says the weekly
+    workflow runs, an f-string is ONE STRING token, literal_eval refuses it,
+    and the first version of this guard skipped it: on 3.11 a name in an
+    f-string passed, and test_the_check_can_see_a_name_in_an_f_string failed on
+    a correct tree. ast.parse reads an f-string on every version; its Constant
+    parts are the text between the placeholders. Review of the fixes,
+    18 September 2026.
+    """
+    try:
+        value = ast.literal_eval(token_text)
+    except (ValueError, SyntaxError):
+        try:
+            node = ast.parse(token_text.strip(), mode="eval").body
+        except SyntaxError:
+            return []
+        if not isinstance(node, ast.JoinedStr):
+            return []
+        return [c.value for c in ast.walk(node)
+                if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+    return [value] if isinstance(value, str) else []
+
+
 class NoWithheldNameIsCommitted(unittest.TestCase):
     def setUp(self):
         snapshot.load_site_rules()
@@ -121,11 +147,7 @@ class NoWithheldNameIsCommitted(unittest.TestCase):
                 out.append(f'"{tok.string}"')
                 out.append(tok.string)
             elif tok.type == tokenize.STRING:
-                try:
-                    value = ast.literal_eval(tok.string)
-                except (ValueError, SyntaxError):
-                    continue
-                if isinstance(value, str):
+                for value in literal_parts(tok.string):
                     # The literal itself, and anything quoted inside it: the
                     # three real names were quoted inside a docstring.
                     out.append(f'"{value}"')
@@ -168,6 +190,22 @@ class NoWithheldNameIsCommitted(unittest.TestCase):
             f'plain = f"{self.PROBE}"\n'
         )
         self.assertEqual(len(self.found_in("probe.py", source)), 2)
+
+    def test_an_f_string_read_as_one_token_is_still_read(self):
+        # How Python 3.11 hands an f-string over: one STRING token, which
+        # literal_eval refuses. This interpreter tokenizes f-strings in parts,
+        # so the 3.11 path is exercised here through literal_parts directly;
+        # it has not been run on a 3.11 interpreter.
+        for token in (f'f"{{x}} for \\"{self.PROBE}\\""', f'f"{self.PROBE}"',
+                      f"rf'{{x!r:>10}} {self.PROBE}'"):
+            with self.subTest(token=token):
+                parts = literal_parts(token)
+                self.assertTrue(parts, "an f-string token gave no text")
+                found = [q for part in parts for q in (self.person_shaped(f'"{part}"')
+                                                        + self.person_shaped(part))]
+                self.assertEqual(len(found), 1, parts)
+        self.assertEqual(literal_parts('b"DANA"'), [], "bytes are not text")
+        self.assertEqual(literal_parts("'plain'"), ["plain"])
 
     def test_the_check_can_see_a_name_quoted_in_prose(self):
         text = f'# A supplier list.\n# "{self.PROBE}" was removed.\nNORTHWIND WIDGETS INC\n'
@@ -236,6 +274,31 @@ class OnlyTheNamedRealOrganisationIsAFixture(unittest.TestCase):
     2026 (outside review, item 13). The committed-name guard above cannot see
     them, because it skips allowlist entries by design. Counts only."""
 
+    @staticmethod
+    def uses(piece, entries):
+        """True if a real allowlist entry appears in this piece.
+
+        Whitespace joined, as person_shaped does: a docstring wraps a firm's
+        name across two lines, and a search one line at a time missed it
+        (review of the fixes, 18 September 2026). Still one literal at a
+        time: a name split across adjacent literals is not seen, which is
+        written down here rather than implied.
+        """
+        flat = " " + " ".join(re.findall(r"[\w&'.-]+", names._norm_name(piece))) + " "
+        return any(f" {e} " in flat for e in entries)
+
+    def test_a_real_entry_wrapped_across_a_docstring_line_is_seen(self):
+        # Built at run time from the allowlist itself, so no real firm's name
+        # is written into this file.
+        snapshot.load_site_rules()
+        sanctioned = names._norm_name(invented.ALLOWLISTED_ORGANISATION)
+        entry = sorted(set(names.VENDOR_ALLOWLIST) - {sanctioned})[0]
+        words = entry.upper().split()
+        self.assertGreater(len(words), 1, "the premise: an entry of more than one word")
+        wrapped = f"As used by {' '.join(words[:1])}\n        {' '.join(words[1:])} in this case."
+        self.assertTrue(self.uses(wrapped, {entry}))
+        self.assertFalse(self.uses("Northwind Widgets Inc", {entry}), "and not on invented text")
+
     def test_no_other_real_allowlist_entry_is_test_data(self):
         snapshot.load_site_rules()
         sanctioned = names._norm_name(invented.ALLOWLISTED_ORGANISATION)
@@ -249,12 +312,10 @@ class OnlyTheNamedRealOrganisationIsAFixture(unittest.TestCase):
                 continue
             with open(os.path.join(tests_dir, name), encoding="utf-8") as fh:
                 pieces = guard.pieces(fh.read())
-            for piece in pieces:
-                for line in piece.split("\n"):
-                    flat = " " + " ".join(re.findall(r"[\w&'.-]+", names._norm_name(line))) + " "
-                    hits += sum(1 for e in others if f" {e} " in flat)
-        # pieces() offers each literal twice (quoted and raw), so one use counts 2.
-        self.assertEqual(hits, 0, f"{hits // 2} use(s) of a real allowlist entry as test data")
+            hits += sum(1 for piece in pieces if self.uses(piece, others))
+        # A count of pieces, never the entries: a failure message is output too.
+        # (A literal is offered twice, quoted and raw; a comment once.)
+        self.assertEqual(hits, 0, f"a real allowlist entry is test data in {hits} piece(s)")
 
 
 if __name__ == "__main__":

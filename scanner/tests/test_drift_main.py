@@ -167,6 +167,16 @@ class MainExitCodes(unittest.TestCase):
         code, _, err = self.run_main(FakeGitHub(files))
         self.assertEqual(code, 0, err)
 
+    def test_exit_1_when_a_site_data_file_starts_with_a_byte_order_mark(self):
+        # The site's loaders open the data files as plain utf-8 and keep the
+        # mark, so it changes what the site loads: its first line is no longer
+        # a comment. That is a difference, not a match. Review of the fixes,
+        # 18 September 2026: stripping it everywhere made this exit 0.
+        files = site_from_vendor()
+        files["vendor_allowlist.txt"] = b"\xef\xbb\xbf" + files["vendor_allowlist.txt"]
+        code, _, err = self.run_main(FakeGitHub(files))
+        self.assertEqual(code, 1, err)
+
     def test_exit_0_when_the_head_is_a_sha_256_object_name(self):
         head = json.dumps({"sha": "0123456789abcdef" * 4}).encode()
         code, _, err = self.run_main(FakeGitHub(head=head))
@@ -177,14 +187,21 @@ class MainExitCodes(unittest.TestCase):
         # replaced, not drift.VENDOR: that is bound as a default argument.
         saved = drift.read_vendor_sources
 
-        def gone(*a, **k):
-            raise FileNotFoundError("invented")
+        # Missing, and present but not text. The second is what the fix added
+        # (ValueError beside OSError); the first was handled before it, so on
+        # its own it proved nothing about the fix (review of the fixes,
+        # 18 September 2026).
+        for error in (FileNotFoundError("invented"),
+                      UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invented")):
+            def unreadable(*a, error=error, **k):
+                raise error
 
-        drift.read_vendor_sources = gone
-        try:
-            self.assertEqual(self.run_main(FakeGitHub())[0], 2)
-        finally:
-            drift.read_vendor_sources = saved
+            drift.read_vendor_sources = unreadable
+            try:
+                with self.subTest(error=type(error).__name__):
+                    self.assertEqual(self.run_main(FakeGitHub())[0], 2)
+            finally:
+                drift.read_vendor_sources = saved
 
     def test_exit_2_when_the_head_is_not_a_sha(self):
         # The files are served perfectly, so only the sha check can refuse.
