@@ -269,6 +269,63 @@ class AnUnreadableRowIsNotAnEnding(unittest.TestCase):
         self.assertEqual((c1.kept_under_watch, c2.kept_under_watch), (1, 0))
         self.assertEqual(mine(e1) + mine(e2) + mine(e3), [])
 
+    def test_it_is_still_watched_on_its_known_end_date(self):
+        # The same boundary as the live rule: a contract ending today is live.
+        # Review of 84fbbb3: a strict ">" passed every test, and lost this
+        # backdated termination.
+        today_end = source_row(contract_date="2025-01-01", end_date="2026-10-19",
+                               value=100_000.0)
+        backdated = source_row(contract_date="2026-10-22", end_date="2026-10-15",
+                               value=100_000.0, reference="ZZ-TEST-0001-A2")
+        weeks = WeeklyLoop()
+        weeks.run(self.bg + [today_end], date(2026, 10, 12))
+        _, _, counts = weeks.run(self.bg + [today_end, self.blank], date(2026, 10, 19))
+        self.assertEqual(counts.kept_under_watch, 1, "its known end date is today")
+        _, events, _ = weeks.run(self.bg + [today_end, self.blank, backdated],
+                                 date(2026, 10, 26))
+        self.assertEqual(moves(events, diff.EXPIRY_MOVED), [("2026-10-19", "2026-10-15")])
+
+    def test_what_can_be_read_of_its_row_is_recorded(self):
+        # Kept with its last good row: the good end date, and the NEW amount
+        # the unreadable row does carry. Review of 84fbbb3: recording the old
+        # stored row instead passed every test, repeated the same
+        # VALUE_CHANGED every week, then reported the next raise from a figure
+        # the first event had already moved away from.
+        raised = source_row(contract_date="2026-10-08", end_date="", value=150_000.0,
+                            reference="ZZ-TEST-0001-A1")
+        again = source_row(contract_date="2026-10-22", end_date="", value=200_000.0,
+                           reference="ZZ-TEST-0001-A2")
+        weeks = WeeklyLoop()
+        weeks.run(self.bg + [self.a0], date(2026, 10, 5))
+        _, e1, c1 = weeks.run(self.bg + [self.a0, raised], date(2026, 10, 12))
+        self.assertEqual(c1.kept_under_watch, 1, "the premise: kept, not live")
+        self.assertEqual(moves(e1, diff.VALUE_CHANGED), [("100000.00", "150000.00")])
+        self.assertEqual((weeks.recorded(K).end_date, weeks.recorded(K).contract_value),
+                         ("2027-03-31", 150_000.0))
+
+        _, e2, _ = weeks.run(self.bg + [self.a0, raised], date(2026, 10, 19))
+        self.assertEqual(mine(e2), [], "nothing changed; nothing to say")
+        _, e3, _ = weeks.run(self.bg + [self.a0, raised, again], date(2026, 10, 26))
+        self.assertEqual(moves(e3, diff.VALUE_CHANGED), [("150000.00", "200000.00")])
+
+    def test_a_wave_of_readable_terminations_is_still_refused(self):
+        # The like-with-like count adds back KEPT contracts only. Ten of seventy
+        # terminated at once, all readable and all still published, is still
+        # the live-count drop the refusal exists for. Review of 84fbbb3: adding
+        # back every still-published contract passed every test.
+        fleet = [source_row(procurement_id=f"PID-T{i:02d}", reference=f"ZZ-TEST-T{i:02d}",
+                            contract_date="2025-01-01", end_date="2027-03-31")
+                 for i in range(10)]
+        cut = [dict(r, delivery_date="2026-10-01", contract_date="2026-10-08",
+                    reference_number=r["reference_number"] + "-A1") for r in fleet]
+        weeks = WeeklyLoop()
+        weeks.run(self.bg + fleet, date(2026, 10, 5))
+        reason, events, counts = weeks.run(self.bg + fleet + cut, date(2026, 10, 12))
+        self.assertEqual((counts.still_published, counts.kept_under_watch), (10, 0),
+                         "the premise: still published, readable, not kept")
+        self.assertEqual(reason, diff.REFUSAL_LIVE_COUNT_DROP)
+        self.assertEqual(events, [])
+
     def test_many_kept_under_watch_do_not_refuse_the_weeks_after(self):
         # previous_live now holds kept contracts. Counted against the live set
         # alone they read as a drop every week, and a tenth of the fleet kept

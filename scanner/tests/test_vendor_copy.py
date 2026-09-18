@@ -152,7 +152,9 @@ class NoWithheldNameIsCommitted(unittest.TestCase):
                     f"{len(found)} quoted string(s) the rules withhold as a person",
                 )
         self.assertGreater(checked, 8, "the walk must actually reach the files")
-        self.assertEqual(kinds, set(COMMITTED_TEXT), "every kind of committed file is read")
+        # Written out, not taken from COMMITTED_TEXT: compared with the
+        # constant that drives the walk, narrowing both passed.
+        self.assertEqual(kinds, {".py", ".md", ".txt"}, "every kind of committed file is read")
 
     # Invented, withheld by rule 2, and on no fixture list. Joined at run time:
     # written out whole and quoted here, it would fail the walk above.

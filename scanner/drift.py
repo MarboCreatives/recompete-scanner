@@ -208,7 +208,11 @@ _MUTATORS = frozenset({
 # The only extra bindings of a watched name that are allowed, anywhere: the
 # site's command-line entry point fills the two run-time tables from their data
 # files, exactly as snapshot.load_site_rules does here, and the data files
-# themselves are compared line by line in WATCHED_DATA. Each table maps to the
+# themselves are compared line by line in WATCHED_DATA. Not checked: WHICH file
+# the loader reads. Its argument comes from the site's command line and
+# refresh.yml, which M2-DESIGN 4.2 does not ask drift to read, so a site that
+# loaded some other file while keeping a stale root copy would pass. Recorded
+# by the review of 84fbbb3, 18 September 2026. Each table maps to the
 # one loader that may fill it.
 #
 # The statement must be exactly `TABLE = its_loader(...)`. The first version

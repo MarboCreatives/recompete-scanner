@@ -606,8 +606,13 @@ def run_diff(
         # watch as well as the live ones, so this week's side counts both.
         # Compared against live alone, every contract kept under watch would
         # count as a drop every week it stays kept, and enough of them would
-        # refuse every run. They cannot produce an event while kept, so
-        # counting them here hides no damage.
+        # refuse every run. Only kept contracts are added back, never every
+        # contract still published: a wave of readable terminations must
+        # still be refused. A kept contract CAN produce an event while kept:
+        # a VALUE_CHANGED, when its unreadable row still has a reference and a
+        # new amount. That event is true of the download, like any other.
+        # (The first version of this comment said they could produce none.
+        # The review of 84fbbb3 showed otherwise, 18 September 2026.)
         current_live=counts.current_live + counts.kept_under_watch,
         gone_candidates=counts.gone_candidates,
     )
