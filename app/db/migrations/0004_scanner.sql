@@ -83,11 +83,39 @@ CREATE TABLE scan_runs (
     AND (live_contracts IS NULL OR live_contracts >= 0)
   ),
 
-  -- Counts only, never names (M2-DESIGN 7). An object is the only shape whose
-  -- keys are event types and whose values are numbers; a bare array or string
-  -- here would mean something else entirely was written.
-  CONSTRAINT scan_runs_events_by_type_is_object CHECK (
-    jsonb_typeof(events_by_type) = 'object'
+  -- Counts only, never names (M2-DESIGN 7). Either '{}' (the default, for a
+  -- run that stopped before it counted anything) or all four event types the
+  -- scanner emits, each a whole number, zero or more. scanner/diff.py's
+  -- events_by_type() writes exactly that shape, zeros included, because "we
+  -- found none" and "we did not look" are different statements.
+  -- scanner/tests/test_schema_fit.py pins these four names to diff.EVENT_TYPES.
+  --
+  -- The first version checked only that the value was an object, and its
+  -- comment claimed that meant "keys are event types and values are numbers".
+  -- It did not: '{"vendor": "<a name>"}' was accepted, and so was a name used
+  -- as a key. Found by an outside review, 18 September 2026.
+  --
+  -- The CASE is load-bearing: jsonb - text[] raises 22023 on a scalar, which
+  -- would turn a refused row into a different error. strict, not lax: lax
+  -- unwraps arrays, so {"NEW_AWARD": [1]} would pass.
+  CONSTRAINT scan_runs_events_by_type_counts CHECK (
+    CASE WHEN jsonb_typeof(events_by_type) = 'object' THEN
+      (events_by_type - ARRAY['EXPIRY_MOVED', 'VALUE_CHANGED', 'CONTRACT_GONE', 'NEW_AWARD']) = '{}'::jsonb
+      AND (events_by_type = '{}'::jsonb
+           OR events_by_type ?& ARRAY['EXPIRY_MOVED', 'VALUE_CHANGED', 'CONTRACT_GONE', 'NEW_AWARD'])
+      AND NOT jsonb_path_exists(events_by_type,
+            'strict $.* ? (@.type() != "number" || @ < 0 || @ != @.floor())')
+    ELSE false END
+  ),
+
+  -- "Data through {quarter}" (M2-DESIGN 8.2): the fiscal year and quarter the
+  -- source's reporting_period column carries, as in 2025-2026-Q4. Any other
+  -- shape means a writer copied the wrong field, possibly one holding a name.
+  -- The writer must not lean on this: ingest passes the value through
+  -- unstripped, and one refused value rolls back the whole week. It should
+  -- write only values of this shape, and NULL otherwise.
+  CONSTRAINT scan_runs_reporting_period_shape CHECK (
+    newest_reporting_period ~ '^[0-9]{4}-[0-9]{4}-Q[1-4]$'
   )
 );
 
@@ -107,6 +135,15 @@ CREATE INDEX scan_runs_status_started_idx ON scan_runs (status, started_at DESC)
 -- There is no vendor_name column and no buyer_name column. vendor_display is
 -- the name AFTER suppression, which for a private individual is the literal
 -- string in contract_snapshot_withheld_pairing below and never their name.
+--
+-- (buyer_org_code, reference_number) is deliberately NOT unique here. It is
+-- the LATEST amendment's reference, for display and the source link, not an
+-- identity: two procurement ids can share one, and a later contract can reuse a
+-- department's reference while this table keeps the older row. G23 measured
+-- the pair unique on one day's live set, not across time, and a UNIQUE would
+-- turn one such row into a refused insert that rolls back the whole week,
+-- every week (M2-DESIGN 6 rule 7). A watch resolves through contract_refs,
+-- whose primary key IS the pair. The test suite pins this.
 
 CREATE TABLE contract_snapshot (
   contract_key      text          PRIMARY KEY,
@@ -141,9 +178,12 @@ CREATE TABLE contract_snapshot (
   -- future writer serialises a raw source record into a text column and lands
   -- the field name with it.
   --
-  -- Written with || rather than concat_ws because Postgres refuses a CHECK
-  -- containing a non-IMMUTABLE function and concat_ws is STABLE. Every column
-  -- named here is NOT NULL, so || cannot collapse the whole expression to NULL
+  -- Written with || rather than concat_ws because concat_ws is STABLE, not
+  -- IMMUTABLE, and a CHECK should give the same answer whatever the session's
+  -- settings. (PostgreSQL 18 does accept a STABLE function in a CHECK; an
+  -- earlier version of this comment said it refused one. Measured 18 September
+  -- 2026.) Every column named here is NOT NULL, so || cannot collapse the whole
+  -- expression to NULL
   -- (a NULL CHECK passes, which would switch this off in silence). Any nullable
   -- column added to this table later must be wrapped in coalesce() before being
   -- added here.
@@ -248,20 +288,41 @@ CREATE INDEX events_scan_run_id_idx
 -- statement here, and the absence of one reads like an omission otherwise.
 --
 -- Specifically NOT granted, and tested for: users, sessions, sign_in_tokens,
--- watch_items, alert_preferences, event_deliveries. The scanner writes public
--- facts about contracts. It has no business reading who is watching them, and
--- a connection string leaking out of a public repository's Actions secret
--- should cost the project a rewritten snapshot, not its users' addresses.
+-- watch_items, alert_preferences, event_deliveries, schema_migrations. The
+-- scanner writes public facts about contracts. It has no business reading who
+-- is watching them, and a connection string leaking out of a public
+-- repository's Actions secret should cost the project a rewritten snapshot,
+-- not its users' addresses. The test suite checks the whole of what the role
+-- holds, read from the catalogs, so a table added later is covered too.
 --
--- NOLOGIN and no password: see the header. This block is idempotent because
--- PostgreSQL has no CREATE ROLE IF NOT EXISTS and the role may already exist
--- from a hand-applied run against recompete_test.
+-- THE ROLE IS CLUSTER-WIDE. neondb, recompete_test and postgres share one
+-- scanner_writer, and it already exists: the first apply against
+-- recompete_test created it on 17 September 2026. NOLOGIN is guaranteed only
+-- when this block creates it. This file deliberately never changes an
+-- existing role's LOGIN or password: it runs against the cluster again
+-- whenever recompete_test is rebuilt (db/README rule 6), and after the
+-- out-of-band ALTER ROLE ... LOGIN above, a "normalising" ALTER ROLE here would
+-- switch the production scanner off. The test suite refuses one.
+--
+-- CONNECT is PUBLIC's by default on every database in this project, so once
+-- the role has LOGIN it can open a session on postgres and recompete_test too.
+-- There it reaches only what PUBLIC reaches, and on recompete_test the same
+-- grants as here, over invented rows. Revoking PUBLIC's CONNECT would also cut
+-- off Neon's own neon_auth and neon_service roles, so it is left as it is.
+--
+-- The EXCEPTION absorbs a race the advisory lock in migrate.mjs cannot see:
+-- that lock is per database, roles are per cluster. A second database's run
+-- creating the role at the same moment makes CREATE ROLE wait on the other
+-- transaction and then fail with unique_violation (duplicate_object only when
+-- the other run committed before this one looked). Either way the role exists,
+-- which is all this block wants.
 
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'scanner_writer') THEN
     CREATE ROLE scanner_writer NOLOGIN;
   END IF;
+EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
 END
 $$;
 
@@ -307,7 +368,7 @@ GRANT USAGE ON SEQUENCE scan_runs_id_seq TO scanner_writer;
 -- the ability to drop DOWN to the scanner's privileges and find out what they
 -- really are.
 --
--- WITH SET TRUE and not WITH INHERIT TRUE, deliberately. Measured against this
+-- WITH SET TRUE and INHERIT FALSE, deliberately. Measured against this
 -- database on 17 September 2026: PostgreSQL 18 grants a role's creator
 -- ADMIN but neither SET nor INHERIT, so `SET ROLE scanner_writer` was refused
 -- with 42501 from the role GUC's check hook until this statement existed. SET
@@ -315,6 +376,12 @@ GRANT USAGE ON SEQUENCE scan_runs_id_seq TO scanner_writer;
 -- carry the scanner's grants in every ordinary session, which is a change to how
 -- the app's own connection behaves and is not wanted.
 --
+-- INHERIT FALSE must be written out. Left unsaid, it takes the member's own
+-- rolinherit, which is true for neondb_owner: the first version of this line
+-- granted INHERIT while this comment said it did not. Measured, and found by
+-- an outside review, 18 September 2026. Re-granting updates the existing
+-- membership in place.
+--
 -- CURRENT_USER rather than the name neondb_owner, so this says "whoever migrates
 -- this database" rather than encoding one hosting provider's naming.
-GRANT scanner_writer TO CURRENT_USER WITH SET TRUE;
+GRANT scanner_writer TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
