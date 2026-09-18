@@ -351,7 +351,7 @@ class WhatGetsRecorded(unittest.TestCase):
             [(e.payload["from"], e.payload["to"]) for e in events2],
             [("2027-03-31", "2026-09-10")],
         )
-        record2 = diff.rows_to_record({self.K: week1}, recorded, [], published2)
+        record2 = diff.rows_to_record({self.K: week1}, recorded, [], published2, run_date=TODAY)
         recorded = {**recorded, **{r.contract_key: r for r in record2.live + record2.refreshed}}
 
         # Run 3: reinstated. Live again, ending 2028-03-31.
@@ -369,7 +369,7 @@ class WhatGetsRecorded(unittest.TestCase):
 
     def test_the_live_rows_are_recorded_as_they_are(self):
         now = [snapshot_row(contract_key=self.K)]
-        record = diff.rows_to_record({}, {}, now, invented.published_of(now))
+        record = diff.rows_to_record({}, {}, now, invented.published_of(now), run_date=TODAY)
         self.assertEqual(record.live, now)
         self.assertEqual(record.refreshed, [])
 
@@ -378,7 +378,7 @@ class WhatGetsRecorded(unittest.TestCase):
         # nothing, and "refreshed" would stop meaning "something changed".
         ended = snapshot_row(contract_key=self.K, end_date=invented.days(-3))
         record = diff.rows_to_record(
-            {self.K: ended}, {}, [], invented.published_of([ended])
+            {self.K: ended}, {}, [], invented.published_of([ended]), run_date=TODAY
         )
         self.assertEqual(record.refreshed, [])
 
@@ -400,7 +400,7 @@ class WhatGetsRecorded(unittest.TestCase):
         }
 
         events, _ = diff.diff({}, {self.K: lapsed}, [], published, TODAY)
-        record = diff.rows_to_record({}, {self.K: lapsed}, [], published)
+        record = diff.rows_to_record({}, {self.K: lapsed}, [], published, run_date=TODAY)
 
         self.assertEqual(events, [], "no event for a contract that was not live either week")
         self.assertEqual(record.refreshed, [], "the move was absorbed with no event to show it")
@@ -409,7 +409,7 @@ class WhatGetsRecorded(unittest.TestCase):
         # Nothing trustworthy to put in its place. A withdrawn contract's row
         # stands as it was, so a watch on it still resolves (M2-DESIGN 5.1).
         gone = snapshot_row(contract_key=self.K, end_date=invented.days(400))
-        record = diff.rows_to_record({self.K: gone}, {}, [], {})
+        record = diff.rows_to_record({self.K: gone}, {}, [], {}, run_date=TODAY)
         self.assertEqual(record.refreshed, [])
 
     def test_a_withdrawn_contract_that_comes_back_is_recorded_as_live_again(self):
@@ -427,7 +427,7 @@ class WhatGetsRecorded(unittest.TestCase):
         events, counts = diff.diff(
             {}, {self.K: row}, [row], invented.published_of([row]), TODAY
         )
-        record = diff.rows_to_record({}, {self.K: row}, [row], invented.published_of([row]))
+        record = diff.rows_to_record({}, {self.K: row}, [row], invented.published_of([row]), run_date=TODAY)
 
         self.assertEqual(events, [], "unchanged, so nothing to say")
         self.assertEqual(counts.returned, 1)
@@ -442,7 +442,7 @@ class WhatGetsRecorded(unittest.TestCase):
         published = {
             self.K: snapshot.PublishedFact("aa-invented", "ZZ-TEST-0001-A1", "2026-09-10", 1.0)
         }
-        record = diff.rows_to_record({self.K: withheld}, {}, [], published)
+        record = diff.rows_to_record({self.K: withheld}, {}, [], published, run_date=TODAY)
 
         self.assertEqual(record.refreshed[0].vendor_key, "")
         self.assertEqual(record.refreshed[0].vendor_display, "Individual supplier (name withheld)")
@@ -955,7 +955,7 @@ class ANameTheRulesNowWithhold(unittest.TestCase):
         before = self.stored(end_date="2028-03-31")
         published = {before.contract_key: snapshot.PublishedFact(
             "aa-invented", "ZZ-TEST-0001-A1", invented.days(-7), 250_000.0)}
-        record = diff.rows_to_record({before.contract_key: before}, {}, [], published)
+        record = diff.rows_to_record({before.contract_key: before}, {}, [], published, run_date=TODAY)
         self.assertEqual(len(record.refreshed), 1)
         self.assertEqual(record.refreshed[0].vendor_key, "")
         self.assertEqual(record.refreshed[0].vendor_display, "Individual supplier (name withheld)")
@@ -964,8 +964,16 @@ class ANameTheRulesNowWithhold(unittest.TestCase):
         # Not live now, not live last week, nothing published changed. Only
         # the supplier is rewritten; the facts stay as they were, so no change
         # is absorbed (see test_a_lapsed_contract_amended_while_not_live_...).
+        #
+        # The download DOES say something new about it: without that, "the
+        # facts stay as they were" could not fail. Round three, 18 September
+        # 2026, found this case passed an empty download, so absorbing the
+        # change while scrubbing passed every test.
         lapsed = self.stored(end_date=invented.days(-400), value=90_000.0)
-        record = diff.rows_to_record({}, {lapsed.contract_key: lapsed}, [], {})
+        published = {lapsed.contract_key: snapshot.PublishedFact(
+            "aa-invented", "ZZ-TEST-0001-A3", invented.days(-300), 260_000.0)}
+        record = diff.rows_to_record({}, {lapsed.contract_key: lapsed}, [], published,
+                                     run_date=TODAY)
         self.assertEqual(len(record.refreshed), 1)
         scrubbed = record.refreshed[0]
         self.assertEqual((scrubbed.vendor_key, scrubbed.vendor_display),
@@ -975,7 +983,7 @@ class ANameTheRulesNowWithhold(unittest.TestCase):
 
     def test_a_company_is_left_alone(self):
         company = snapshot_row(end_date=invented.days(-400))
-        record = diff.rows_to_record({}, {company.contract_key: company}, [], {})
+        record = diff.rows_to_record({}, {company.contract_key: company}, [], {}, run_date=TODAY)
         self.assertEqual(record.refreshed, [])
 
 
@@ -1077,15 +1085,40 @@ class WhatGetsRecordedMore(unittest.TestCase):
         fresh = snapshot_row(contract_key="aa-invented::PID-0003", reference="ZZ-TEST-0003")
         current = [unchanged, withheld, fresh]
         record = diff.rows_to_record(by_key([unchanged, withheld]), {}, current,
-                                     invented.published_of(current))
+                                     invented.published_of(current), run_date=TODAY)
         self.assertEqual(record.live, current)
 
     def test_a_published_fact_with_no_reference_is_not_recorded(self):
         before = snapshot_row(end_date="2028-03-31")
         published = {before.contract_key: snapshot.PublishedFact(
             "aa-invented", "", invented.days(-7), 250_000.0)}
-        record = diff.rows_to_record({before.contract_key: before}, {}, [], published)
+        record = diff.rows_to_record({before.contract_key: before}, {}, [], published, run_date=TODAY)
         self.assertEqual(record.refreshed, [], "an unlinkable row replaced a linkable one")
+        # And it is kept under watch, with the row it had: its known end date
+        # is still ahead, so it has not ended. Round three, 18 September 2026.
+        self.assertEqual(record.live, [before])
+
+    def test_a_blank_end_date_keeps_it_under_watch_until_its_known_end(self):
+        before = snapshot_row(end_date="2028-03-31", value=250_000.0)
+        blank = {before.contract_key: snapshot.PublishedFact(
+            "aa-invented", "ZZ-TEST-0001-A1", None, 250_000.0)}
+        record = diff.rows_to_record({before.contract_key: before}, {}, [], blank,
+                                     run_date=TODAY)
+        self.assertEqual([r.end_date for r in record.live], ["2028-03-31"])
+        self.assertEqual(record.refreshed, [])
+
+        # Past its known end date, it has ended: refreshed, not kept.
+        ended = snapshot_row(end_date=invented.days(-1), value=250_000.0)
+        record = diff.rows_to_record({ended.contract_key: ended}, {}, [], blank,
+                                     run_date=TODAY)
+        self.assertEqual(record.live, [])
+        self.assertEqual(len(record.refreshed), 1)
+
+        # And diff() counts the same one rows_to_record keeps: one rule.
+        _, counts = diff.diff({before.contract_key: before}, {}, [], blank, TODAY)
+        self.assertEqual(counts.kept_under_watch, 1)
+        _, counts = diff.diff({ended.contract_key: ended}, {}, [], blank, TODAY)
+        self.assertEqual(counts.kept_under_watch, 0)
 
 
 if __name__ == "__main__":

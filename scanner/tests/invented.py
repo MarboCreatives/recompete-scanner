@@ -270,7 +270,8 @@ class WeeklyLoop:
             drift_passed=drift_passed,
         )
         if reason is None:
-            record = diff.rows_to_record(previous_live, ever_seen, current, pipe.published)
+            record = diff.rows_to_record(previous_live, ever_seen, current, pipe.published,
+                                           run_date=run_date)
             for row in record.live:
                 self.state[row.contract_key] = (row, run_id)
             for row in record.refreshed:

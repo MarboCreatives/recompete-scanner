@@ -195,6 +195,155 @@ class ABlankNeverReplacesAKnownValue(unittest.TestCase):
         self.assertEqual(moves(e2, diff.VALUE_CHANGED), [("240000.00", "410000.00")])
 
 
+class AnUnreadableRowIsNotAnEnding(unittest.TestCase):
+    """Round three of the review, 18 September 2026. Fact (f) and its wider form.
+
+    A contract whose latest amendment cannot be read leaves the live set while
+    its known end date is still ahead. It used to leave previous_live with it,
+    for good, so what the government did next was never reported. Each control
+    below is the same change on a contract that stayed readable.
+    """
+
+    def setUp(self):
+        snapshot.load_site_rules()
+        self.bg = background()
+        self.a0 = source_row(contract_date="2025-01-01", end_date="2027-03-31", value=100_000.0)
+        self.blank = source_row(contract_date="2026-10-08", end_date="", value=100_000.0,
+                                reference="ZZ-TEST-0001-A1")
+        self.cut = source_row(contract_date="2026-10-15", end_date="2026-10-14", value=60_000.0,
+                              reference="ZZ-TEST-0001-A2")
+
+    def blank_week(self, weeks, amendment):
+        weeks.run(self.bg + [self.a0], date(2026, 10, 5))
+        _, events, counts = weeks.run(self.bg + [self.a0, amendment], date(2026, 10, 12))
+        # The premise, asserted: it really did leave the live set, silently.
+        self.assertEqual(mine(events), [])
+        self.assertEqual(counts.current_live, len(self.bg), "the contract must not be live")
+        self.assertEqual(counts.kept_under_watch, 1)
+        self.assertEqual(weeks.recorded(K).end_date, "2027-03-31")
+
+    def test_withdrawn_after_a_blank_end_date_is_gone(self):
+        weeks = WeeklyLoop()
+        self.blank_week(weeks, self.blank)
+        _, events, _ = weeks.run(self.bg, date(2026, 10, 19))
+        self.assertEqual([(e.event_type, e.payload["last_end_date"]) for e in mine(events)],
+                         [(diff.CONTRACT_GONE, "2027-03-31")])
+
+    def test_terminated_after_a_blank_end_date_is_reported(self):
+        weeks = WeeklyLoop()
+        self.blank_week(weeks, self.blank)
+        _, events, _ = weeks.run(self.bg + [self.a0, self.blank, self.cut], date(2026, 10, 19))
+        self.assertEqual(moves(events, diff.EXPIRY_MOVED), [("2027-03-31", "2026-10-14")])
+        self.assertEqual(moves(events, diff.VALUE_CHANGED), [("100000.00", "60000.00")])
+
+    def test_terminated_after_a_row_with_no_reference_is_reported(self):
+        no_ref = source_row(contract_date="2026-10-08", end_date="2028-03-31",
+                            value=150_000.0, reference="")
+        weeks = WeeklyLoop()
+        self.blank_week(weeks, no_ref)
+        _, events, _ = weeks.run(self.bg + [self.a0, no_ref, self.cut], date(2026, 10, 19))
+        self.assertEqual(moves(events, diff.EXPIRY_MOVED), [("2027-03-31", "2026-10-14")])
+        self.assertEqual(moves(events, diff.VALUE_CHANGED), [("100000.00", "60000.00")])
+
+    def test_the_controls_the_same_changes_on_a_readable_contract(self):
+        weeks = WeeklyLoop()
+        weeks.run(self.bg + [self.a0], date(2026, 10, 5))
+        _, gone, _ = weeks.run(self.bg, date(2026, 10, 19))
+        self.assertEqual([e.event_type for e in mine(gone)], [diff.CONTRACT_GONE])
+
+        weeks = WeeklyLoop()
+        weeks.run(self.bg + [self.a0], date(2026, 10, 5))
+        _, cut, _ = weeks.run(self.bg + [self.a0, self.cut], date(2026, 10, 19))
+        self.assertEqual(moves(cut, diff.EXPIRY_MOVED), [("2027-03-31", "2026-10-14")])
+
+    def test_it_is_watched_only_until_its_known_end_date(self):
+        # Once the last readable end date passes, it has ended as far as
+        # anything readable says, and an ended contract leaving is not news.
+        near = source_row(contract_date="2025-01-01", end_date="2026-10-20", value=100_000.0)
+        weeks = WeeklyLoop()
+        weeks.run(self.bg + [near], date(2026, 10, 5))
+        _, e1, c1 = weeks.run(self.bg + [near, self.blank], date(2026, 10, 12))
+        _, e2, c2 = weeks.run(self.bg + [near, self.blank], date(2026, 10, 26))
+        _, e3, _ = weeks.run(self.bg, date(2026, 11, 2))
+
+        self.assertEqual((c1.kept_under_watch, c2.kept_under_watch), (1, 0))
+        self.assertEqual(mine(e1) + mine(e2) + mine(e3), [])
+
+    def test_many_kept_under_watch_do_not_refuse_the_weeks_after(self):
+        # previous_live now holds kept contracts. Counted against the live set
+        # alone they read as a drop every week, and a tenth of the fleet kept
+        # would refuse every run until their end dates passed.
+        blanked = [source_row(procurement_id=f"PID-UN{i:02d}", reference=f"ZZ-TEST-UN{i:02d}",
+                              contract_date="2025-01-01", end_date="2027-03-31")
+                   for i in range(10)]
+        amended = [dict(r, delivery_date="", contract_date="2026-10-08",
+                        reference_number=r["reference_number"] + "-A1") for r in blanked]
+        weeks = WeeklyLoop()
+        weeks.run(self.bg + blanked, date(2026, 10, 5))
+        for day in (12, 19, 26):
+            reason, events, counts = weeks.run(self.bg + blanked + amended, date(2026, 10, day))
+            with self.subTest(day=day):
+                self.assertIsNone(reason)
+                self.assertEqual(events, [])
+                self.assertEqual(counts.kept_under_watch, 10)
+
+
+class AReferenceKeyIsNotANewAward(unittest.TestCase):
+    """Round three, 18 September 2026. diff.py point 7."""
+
+    def setUp(self):
+        snapshot.load_site_rules()
+        self.bg = background()
+
+    def test_an_amendment_under_a_new_reference_says_nothing(self):
+        # No procurement_id, so ingest keys each row on its reference number,
+        # and the amendment arrives as a contract nobody has seen, with no
+        # amendments of its own. The first version called it a new award.
+        y0 = source_row(procurement_id="", reference="ZZ-TEST-Y0", end_date="2027-03-31",
+                        value=100_000.0)
+        y1 = source_row(procurement_id="", reference="ZZ-TEST-Y1", end_date="2028-03-31",
+                        value=180_000.0, contract_date="2026-09-20")
+        weeks = WeeklyLoop()
+        _, _, c0 = weeks.run(self.bg + [y0], date(2026, 9, 17))
+        _, events, counts = weeks.run(self.bg + [y0, y1], date(2026, 9, 24))
+
+        self.assertEqual(counts.current_live, c0.current_live + 1,
+                         "the premise: the amendment arrived as a second contract")
+        self.assertEqual([e for e in events if e.event_type == diff.NEW_AWARD], [])
+        self.assertEqual(counts.new_by_reference, 1)
+
+    def test_the_same_contract_with_a_procurement_id_is_still_a_new_award(self):
+        # The control: point 7 must not switch NEW_AWARD off for everyone.
+        fresh = source_row(contract_date="2026-10-01", end_date="2027-09-30")
+        weeks = WeeklyLoop()
+        weeks.run(self.bg, date(2026, 10, 5))
+        _, events, counts = weeks.run(self.bg + [fresh], date(2026, 10, 12))
+        self.assertEqual([e.event_type for e in mine(events)], [diff.NEW_AWARD])
+        self.assertEqual(counts.new_by_reference, 0)
+
+
+class AnAmountTheDatabaseCannotHold(unittest.TestCase):
+    """Round three, 18 September 2026. contract_value is numeric(16,2)."""
+
+    def setUp(self):
+        snapshot.load_site_rules()
+        self.bg = background()
+
+    def test_is_read_as_unknown_and_the_last_good_amount_stands(self):
+        a0 = source_row(contract_date="2025-01-01", value=100_000.0)
+        for bad in ("1e15", "inf", "nan"):
+            with self.subTest(value=bad):
+                huge = source_row(contract_date="2026-10-08", value=bad,
+                                  reference="ZZ-TEST-0001-A1")
+                weeks = WeeklyLoop()
+                weeks.run(self.bg + [a0], date(2026, 10, 5))
+                reason, events, counts = weeks.run(self.bg + [a0, huge], date(2026, 10, 12))
+                self.assertIsNone(reason)
+                self.assertEqual(mine(events), [], "no change from or to an unstorable amount")
+                self.assertEqual(counts.values_unusable, 1)
+                self.assertEqual(weeks.recorded(K).contract_value, 100_000.0)
+
+
 class EveryLiveContractIsRecordedEveryWeek(unittest.TestCase):
     """Round two, R2-13: Record.live is every live contract, changed or not."""
 

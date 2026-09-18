@@ -6,7 +6,8 @@ file withhold all three. It was pushed to this public repository before a
 review caught it; the branch was rewritten to remove it. CODING-STANDARDS 3:
 never write a withheld name anywhere — and a re-copy from the site, which is how
 vendor/ is meant to be kept current, would bring them straight back. So this
-checks every file the scanner commits, not only the one where they were found.
+checks every file the scanner commits (.py, .md and .txt), not only the one
+where they were found.
 
 The oracle is the site's own rule, deliberately. The question is exactly "would
 the rules this repository enforces withhold this string as a person", and the
@@ -27,6 +28,9 @@ import snapshot
 from tests import invented
 from vendor import names
 
+# Absent before Python 3.12, when an f-string was one STRING token.
+FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", object())
+
 SCANNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Strings the rules read as a person but which are not anybody:
@@ -45,11 +49,17 @@ NOT_ANYBODY = {"surname, given", "somebody, invented"}
 QUOTED = re.compile(r"\"([^\"\n]{4,80})\"")
 
 
-def committed_python_files():
+# Every kind of file the scanner commits. Round three, 18 September 2026: the
+# first version opened .py files only, so a name quoted in README.md, or in a
+# comment of vendor_allowlist.txt, which is re-copied from the site, passed.
+COMMITTED_TEXT = (".py", ".md", ".txt")
+
+
+def committed_files():
     for root, dirs, files in os.walk(SCANNER):
         dirs[:] = [d for d in dirs if d != "__pycache__"]
         for name in files:
-            if name.endswith(".py"):
+            if name.endswith(COMMITTED_TEXT):
                 yield os.path.join(root, name)
 
 
@@ -101,6 +111,14 @@ class NoWithheldNameIsCommitted(unittest.TestCase):
         for tok in tokenize.generate_tokens(io.StringIO(source).readline):
             if tok.type == tokenize.COMMENT:
                 out.append(tok.string)
+            elif tok.type == FSTRING_MIDDLE:
+                # The literal text of an f-string, between its placeholders.
+                # From Python 3.12 an f-string is not one STRING token, and
+                # before it literal_eval refuses one, so either way the first
+                # version never looked inside an f-string. Round three,
+                # 18 September 2026.
+                out.append(f'"{tok.string}"')
+                out.append(tok.string)
             elif tok.type == tokenize.STRING:
                 try:
                     value = ast.literal_eval(tok.string)
@@ -113,13 +131,20 @@ class NoWithheldNameIsCommitted(unittest.TestCase):
                     out.append(value)
         return out
 
+    def found_in(self, path, text):
+        # A Python file is read piece by piece (see pieces); any other file is
+        # prose, read whole.
+        parts = self.pieces(text) if path.endswith(".py") else [text]
+        return [q for piece in parts for q in self.person_shaped(piece)]
+
     def test_no_file_the_scanner_commits_quotes_a_withheld_name(self):
         checked = 0
-        for path in committed_python_files():
+        kinds = set()
+        for path in committed_files():
             checked += 1
+            kinds.add(os.path.splitext(path)[1])
             with open(path, encoding="utf-8") as fh:
-                found = [q for piece in self.pieces(fh.read())
-                         for q in self.person_shaped(piece)]
+                found = self.found_in(path, fh.read())
             with self.subTest(file=os.path.relpath(path, SCANNER)):
                 # The count, never the strings: a failure message is output too.
                 self.assertEqual(
@@ -127,6 +152,24 @@ class NoWithheldNameIsCommitted(unittest.TestCase):
                     f"{len(found)} quoted string(s) the rules withhold as a person",
                 )
         self.assertGreater(checked, 8, "the walk must actually reach the files")
+        self.assertEqual(kinds, set(COMMITTED_TEXT), "every kind of committed file is read")
+
+    # Invented, withheld by rule 2, and on no fixture list. Joined at run time:
+    # written out whole and quoted here, it would fail the walk above.
+    PROBE = " ".join(("DANA", "SMALLWOOD"))
+
+    def test_the_check_can_see_a_name_in_an_f_string(self):
+        source = (
+            "x = 1\n"
+            f'message = f"{{x}} for \\"{self.PROBE}\\""\n'
+            f'plain = f"{self.PROBE}"\n'
+        )
+        self.assertEqual(len(self.found_in("probe.py", source)), 2)
+
+    def test_the_check_can_see_a_name_quoted_in_prose(self):
+        text = f'# A supplier list.\n# "{self.PROBE}" was removed.\nNORTHWIND WIDGETS INC\n'
+        self.assertEqual(len(self.found_in("vendor_allowlist.txt", text)), 1)
+        self.assertEqual(len(self.found_in("README.md", text)), 1)
 
     def test_the_check_can_see_a_name_that_wraps_across_lines(self):
         # The shape the original three had, built from invented words.

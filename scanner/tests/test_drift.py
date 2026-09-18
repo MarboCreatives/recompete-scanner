@@ -211,17 +211,62 @@ class ARuleChangedAfterItsDefinitionRefuses(unittest.TestCase):
     def test_the_sites_own_loader_in_main_is_allowed(self):
         # build_site.main() fills VENDOR_ALLOWLIST from its data file, exactly
         # as snapshot.load_site_rules does here. That is not a rule change;
-        # the file it reads is compared line by line in WATCHED_DATA.
+        # the file it reads is compared line by line in WATCHED_DATA. These
+        # are the site's own two lines, as they stand at d09109f.
         base = "VENDOR_ALLOWLIST: set[str] = set()\n"
-        loader = "def main():\n    global VENDOR_ALLOWLIST\n    VENDOR_ALLOWLIST = load()\n"
+        loader = ("def main():\n    global VENDOR_ALLOWLIST\n"
+                  "    VENDOR_ALLOWLIST = load_vendor_allowlist(args.vendor_allowlist)\n")
         watched = (("names.py", "build_site.py", drift.TREE, "VENDOR_ALLOWLIST"),)
         found = drift.check_drift({"build_site.py": base + loader}, {"names.py": base},
                                   watched=watched, watched_data=())
         self.assertEqual(found, [])
 
-    def test_the_same_loader_anywhere_else_is_not(self):
+    def test_anything_else_in_main_that_changes_the_table_is_not(self):
+        # Round three, 18 September 2026: the exemption never read the value,
+        # so each of these passed. Every one drops or replaces allowlist
+        # entries, which publishes a name the site withholds.
         base = "VENDOR_ALLOWLIST: set[str] = set()\n"
-        loader = "def seed():\n    global VENDOR_ALLOWLIST\n    VENDOR_ALLOWLIST = {'x'}\n"
+        watched = (("names.py", "build_site.py", drift.TREE, "VENDOR_ALLOWLIST"),)
+        for body in (
+            'VENDOR_ALLOWLIST -= {"x"}',
+            'VENDOR_ALLOWLIST |= {"x"}',
+            "VENDOR_ALLOWLIST = set()",
+            "VENDOR_ALLOWLIST = load()",
+            'VENDOR_ALLOWLIST = load_vendor_allowlist(p) - {"x"}',
+            "VENDOR_ALLOWLIST = _SPARE = load_vendor_allowlist(p)",
+            "VENDOR_ALLOWLIST = load_category_merges(p)",
+        ):
+            with self.subTest(body=body):
+                loader = f"def main():\n    global VENDOR_ALLOWLIST\n    {body}\n"
+                found = drift.check_drift({"build_site.py": base + loader},
+                                          {"names.py": base},
+                                          watched=watched, watched_data=())
+                self.assertEqual([d.symbol for d in found], ["VENDOR_ALLOWLIST"])
+                self.assertIn("cannot compare", found[0].detail)
+
+    def test_an_item_changed_in_a_watched_table_refuses(self):
+        # Round three: the item-assignment branch had no test, and one line in
+        # the real site's main() of this shape is caught by nothing else.
+        base = "CATEGORY_MERGES: dict[str, str] = {}\n"
+        watched = (("names.py", "build_site.py", drift.TREE, "CATEGORY_MERGES"),)
+        for body in ('CATEGORY_MERGES["a"] = "b"', 'del CATEGORY_MERGES["a"]'):
+            with self.subTest(body=body):
+                main = ("def main():\n    global CATEGORY_MERGES\n"
+                        "    CATEGORY_MERGES = load_category_merges(p)\n"
+                        f"    {body}\n")
+                found = drift.check_drift({"build_site.py": base + main},
+                                          {"names.py": base},
+                                          watched=watched, watched_data=())
+                self.assertEqual([d.symbol for d in found], ["CATEGORY_MERGES"])
+
+    def test_the_same_loader_anywhere_else_is_not(self):
+        # The real loader call, so the only thing wrong is WHERE it is. With
+        # any other value, the value check refuses it first and this case
+        # stops testing the place: the break harness showed that on
+        # 18 September 2026.
+        base = "VENDOR_ALLOWLIST: set[str] = set()\n"
+        loader = ("def seed():\n    global VENDOR_ALLOWLIST\n"
+                  "    VENDOR_ALLOWLIST = load_vendor_allowlist(p)\n")
         watched = (("names.py", "build_site.py", drift.TREE, "VENDOR_ALLOWLIST"),)
         found = drift.check_drift({"build_site.py": base + loader}, {"names.py": base},
                                   watched=watched, watched_data=())

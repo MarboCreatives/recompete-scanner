@@ -40,8 +40,12 @@ from tests.invented import TODAY, by_key
 WITHHELD = "Individual supplier (name withheld)"
 
 
-def rows_for(names_and_why, **over):
-    """One raw source row per name, each with its own contract and reference."""
+def rows_for(names_and_why, start=0, **over):
+    """One raw source row per name, each with its own contract and reference.
+
+    `start` numbers the contracts. Two lists built from 0 share contract keys,
+    and deduplicate then merges one list's rows into the other's.
+    """
     return [
         invented.source_row(
             procurement_id=f"PID-{n:04d}",
@@ -49,7 +53,7 @@ def rows_for(names_and_why, **over):
             vendor_name=name,
             **over,
         )
-        for n, (name, _why) in enumerate(names_and_why)
+        for n, (name, _why) in enumerate(names_and_why, start)
     ]
 
 
@@ -262,7 +266,7 @@ class NothingIsPrinted(unittest.TestCase):
 
         def run():
             diff.run_diff(by_key(before), {}, after, pub, TODAY)
-            diff.rows_to_record(by_key(before), {}, after, pub)
+            diff.rows_to_record(by_key(before), {}, after, pub, run_date=TODAY)
 
         out, err = self.capture(run)
         self.assertEqual((out, err), ("", ""))
@@ -275,17 +279,26 @@ class NothingIsPrinted(unittest.TestCase):
     def test_what_the_scanner_does_print_holds_no_name_and_no_reference(self):
         # The reports are the only thing written to the log, so they are what a
         # public Actions log would show. Printed here exactly as scan.py will.
-        raws = rows_for(invented.INDIVIDUALS) + rows_for(invented.ORGANISATIONS)
+        #
+        # The companies are numbered from 100. Round three, 18 September 2026:
+        # numbered from 0 like the individuals, they shared contract keys with
+        # them, deduplicate merged them away, and no event carried a supplier
+        # at all — so a report printing supplier keys passed this test.
+        raws = rows_for(invented.INDIVIDUALS) + rows_for(invented.ORGANISATIONS, 100)
         rows = invented.pipeline_rows(raws)
         before, snap_counts = snapshot.build_snapshot(rows, TODAY)
 
         after_rows = invented.pipeline_rows(
             rows_for(invented.INDIVIDUALS, end_date="2029-03-31")
-            + rows_for(invented.ORGANISATIONS, end_date="2029-03-31")
+            + rows_for(invented.ORGANISATIONS, 100, end_date="2029-03-31")
         )
         after, _ = snapshot.build_snapshot(after_rows, TODAY)
         reason, events, diff_counts = diff.run_diff(
             by_key(before), {}, after, invented.published_of(after), TODAY)
+        # The premise: companies reach events, carrying their keys. Without
+        # this, "no name reached the log" can hold because there was none.
+        self.assertIsNone(reason)
+        self.assertGreaterEqual(sum(1 for e in events if e.vendor_key), len(invented.ORGANISATIONS))
 
         def run():
             print(snapshot.report(snap_counts))

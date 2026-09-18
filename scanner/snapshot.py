@@ -26,6 +26,7 @@ and those have been through the site's own suppression.
 
 from __future__ import annotations
 
+import math
 import os
 import dataclasses
 from dataclasses import dataclass
@@ -110,9 +111,13 @@ class SnapshotCounts:
     # Kept rows whose contract_key is ingest.build_contract_key's FALLBACK,
     # "{org}::REF::{ref}", used when a row has no procurement_id. That key
     # changes when the reference number changes, so an amendment to such a
-    # contract looks like one contract ending and another beginning. G24 says
-    # procurement_id is stable and the design measured on it; this count is how
-    # PR C finds out how many contracts it does not cover, rather than assuming.
+    # contract arrives as a second contract. The first one does NOT end: the
+    # dataset is historical, so its old row stays published and stays live
+    # until its old end date, and the amendment's change is never reported on
+    # it. diff.py says nothing about the second one either (see
+    # is_keyed_by_reference). G24 says procurement_id is stable and the design
+    # measured on it; this count is how PR C finds out how many contracts it
+    # does not cover, rather than assuming.
     keyed_by_reference: int = 0
 
     @property
@@ -320,7 +325,7 @@ def build_snapshot(
             continue
 
         contract_key = r.get("contract_key") or ""
-        if "::REF::" in contract_key:
+        if is_keyed_by_reference(contract_key):
             keyed_by_reference += 1
 
         category_key = (r.get("category_key") or "").strip()
@@ -355,6 +360,15 @@ def build_snapshot(
         keyed_by_reference=keyed_by_reference,
     )
     return out, counts
+
+
+def is_keyed_by_reference(contract_key: str) -> bool:
+    """True for ingest.build_contract_key's fallback key, "{org}::REF::{ref}".
+
+    One function, because two places ask: build_snapshot counts these, and
+    diff.py will not call one a new award.
+    """
+    return "::REF::" in contract_key
 
 
 def resuppress(row: SnapshotRow) -> SnapshotRow:
@@ -447,10 +461,31 @@ def _as_date(value: Any) -> Optional[date]:
         return None
 
 
+# contract_snapshot.contract_value is numeric(16,2) in migration 0004: fourteen
+# digits before the point. PostgreSQL refuses anything from 10**14 up, and
+# refuses infinity, with "numeric field overflow". One such row would roll back
+# the whole week (M2-DESIGN 6 rule 7), and the next week, and every week after,
+# because the source keeps the value. tests/test_schema_fit.py pins this to the
+# migration's text.
+LARGEST_STORABLE_VALUE = 10**14
+
+
 def _as_float(value: Any) -> Optional[float]:
+    """An amount, or None when it cannot be read OR cannot be stored.
+
+    Unstorable is treated exactly like unreadable, which the rest of the code
+    already handles: _keep_last_good keeps the last good amount, and diff.py
+    says nothing from or to it. ingest.parse_money is a bare float(), so "inf",
+    "nan" and a fifteen-digit typo all arrive here as numbers. Found by round
+    three of the review, 18 September 2026. Whether the real data holds one
+    has not been measured.
+    """
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(number) or abs(round(number, 2)) >= LARGEST_STORABLE_VALUE:
+        return None
+    return number

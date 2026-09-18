@@ -52,6 +52,23 @@ each rule exists to close exactly one of them.
      every contract earlier downloads held, which needs a new table — is
      Jon's decision after that (PROGRESS.md, 17 September).
 
+  7. AN AMENDMENT UNDER A NEW REFERENCE, ON A CONTRACT WITH NO PROCUREMENT ID.
+     Found by round three of the review, run on 18 September 2026. Without a
+     procurement_id, ingest keys the contract on its reference number, so an
+     amendment under a new reference arrives as a second contract with no
+     amendments, and passed point 6's test. It is not new. NEW_AWARD is
+     therefore never emitted for a reference-keyed contract; it is counted as
+     new_by_reference, and PR C measures how many real awards that misses.
+
+AND ONE WAY TO LOSE ONE
+
+  An unreadable row is not an ending. Found by the same round. A contract whose
+  latest amendment has a blank or unreadable end date, or no reference, leaves
+  the live set while its known end date is still ahead. Recorded as not live,
+  it left previous_live for good, so its later termination or withdrawal was
+  never reported. Such a contract is now KEPT UNDER WATCH (_kept_under_watch):
+  recorded as live, with its last good row, until its known end date passes.
+
 FOUR INPUTS, BECAUSE THERE ARE FOUR QUESTIONS
 
   previous_live  the contracts that were live at the last run with status ok or
@@ -86,7 +103,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any, Iterable, Mapping, NamedTuple, Optional
 
-from snapshot import PublishedFact, SnapshotRow, resuppress
+from snapshot import PublishedFact, SnapshotRow, is_keyed_by_reference, resuppress
 
 EXPIRY_MOVED = "EXPIRY_MOVED"
 VALUE_CHANGED = "VALUE_CHANGED"
@@ -153,11 +170,16 @@ class DiffCounts:
     new_award_withheld: int = 0
     # Never recorded but already amended: an old contract, not a new award.
     new_but_amended: int = 0
+    # Never recorded, keyed by reference number: possibly an amendment. Point 7.
+    new_by_reference: int = 0
     returned: int = 0
     # Left the live set but still in the download: ended, terminated early, or
     # dropped by build_snapshot. Compared against what the download says, never
     # reported as gone.
     still_published: int = 0
+    # Of those, the ones whose row cannot be read while their known end date is
+    # still ahead. Recorded as live, so they stay in previous_live.
+    kept_under_watch: int = 0
     dates_unusable: int = 0
     values_unusable: int = 0
 
@@ -247,6 +269,10 @@ def diff(
                 # recorded (it is in `current`), so every later change to it is
                 # compared and reported truthfully.
                 tally["new_but_amended"] += 1
+            elif is_keyed_by_reference(key):
+                # Point 7. Keyed by a reference number, which changes with
+                # every amendment, so "never seen" does not mean "new".
+                tally["new_by_reference"] += 1
             else:
                 events.append(_new_award(now))
                 tally["new_award"] += 1
@@ -279,6 +305,8 @@ def diff(
             # change is reported as what it is: a termination is an EXPIRY_MOVED
             # with a negative days_moved.
             tally["still_published"] += 1
+            if _kept_under_watch(before, fact, run_date):
+                tally["kept_under_watch"] += 1
             if fact.reference_number:
                 _compare(before, _as_row(before, fact), events, tally)
             else:
@@ -312,8 +340,10 @@ def diff(
         gone_candidates=tally["contract_gone"],
         new_award_withheld=tally["new_award_withheld"],
         new_but_amended=tally["new_but_amended"],
+        new_by_reference=tally["new_by_reference"],
         returned=tally["returned"],
         still_published=tally["still_published"],
+        kept_under_watch=tally["kept_under_watch"],
         dates_unusable=tally["dates_unusable"],
         values_unusable=tally["values_unusable"],
     )
@@ -368,6 +398,33 @@ def _keep_last_good(before: Optional[SnapshotRow], after: SnapshotRow) -> Snapsh
     if after.contract_value is None and before.contract_value is not None:
         keep["contract_value"] = before.contract_value
     return replace(after, **keep) if keep else after
+
+
+def _kept_under_watch(
+    last_known: SnapshotRow, fact: Optional[PublishedFact], run_date: date
+) -> bool:
+    """Out of the live set only because its row cannot be read, not because it ended.
+
+    One function, because diff() counts these and rows_to_record() records
+    them, and written twice that would be two rules that could drift apart.
+
+    True when the contract is still in the download, its latest row has a blank
+    or unreadable end date or no reference, and the last end date the scanner
+    knew is still on or after the run date. Such a contract has not ended; the
+    scanner simply cannot read what it says this week. Recording it as not live
+    took it out of previous_live for good, so a later termination (a real
+    EXPIRY_MOVED) or withdrawal (a real CONTRACT_GONE) was never reported.
+    Round three of the review found both on 18 September 2026.
+
+    It stops once the known end date passes: from then on it has, as far as
+    anything readable says, ended, and a contract that ended is not news.
+    """
+    if fact is None:
+        return False
+    if fact.reference_number and _as_date(fact.end_date) is not None:
+        return False
+    end = _as_date(last_known.end_date)
+    return end is not None and end >= run_date
 
 
 def _compare(
@@ -429,8 +486,10 @@ def _as_row(before: SnapshotRow, fact: PublishedFact) -> SnapshotRow:
 class Record(NamedTuple):
     """What contract_snapshot must hold once this run commits.
 
-    live       every contract live now. Upserted; last_seen_run moves to this
-               run, which is what puts it in next run's previous_live.
+    live       every contract live now, plus every contract kept under watch
+               (_kept_under_watch) with its last good row. Upserted;
+               last_seen_run moves to this run, which is what puts it in next
+               run's previous_live.
     refreshed  contracts NOT live now but still in the download, whose recorded
                dates, value or reference no longer match what is published.
                Their facts are updated; last_seen_run is left alone, so they do
@@ -446,6 +505,8 @@ def rows_to_record(
     ever_seen: Mapping[str, SnapshotRow],
     current: Iterable[SnapshotRow],
     published: Mapping[str, PublishedFact],
+    *,
+    run_date: date,
 ) -> Record:
     """Which rows the writer must store for the NEXT run's diff to be true.
 
@@ -476,6 +537,14 @@ def rows_to_record(
     3. A blank date or value in the download never replaces a known one
        (_keep_last_good), in the live rows or the refreshed ones.
 
+    4. A contract live last week that left the live set only because its row
+       cannot be read, while its known end date is still ahead, is recorded as
+       LIVE, not refreshed (_kept_under_watch). Otherwise rule 1's "refreshed,
+       last_seen_run left alone" drops it from previous_live, and its later
+       termination or withdrawal is never reported. `run_date` is required for
+       this, and has no default: a writer that forgot it would lose exactly
+       those events and nothing would say so.
+
     Separately, every stored row goes back through today's name rules
     (snapshot.resuppress). A row whose supplier the rules now withhold is
     returned in `refreshed` with its facts untouched, so the writer scrubs the
@@ -499,6 +568,9 @@ def rows_to_record(
                 after = _keep_last_good(after, _as_row(after, fact))
             # Not in the download, or not linkable: nothing trustworthy to
             # record in its place, so the last good state stands.
+            if _kept_under_watch(last_known[key], fact, run_date):
+                live.append(after)
+                continue
         if after != as_stored:
             refreshed.append(after)
     return Record(live, refreshed)
@@ -530,7 +602,13 @@ def run_diff(
         self_tests_passed=self_tests_passed,
         drift_passed=drift_passed,
         previous_live=counts.previous_live,
-        current_live=counts.current_live,
+        # Like with like. previous_live holds last week's contracts kept under
+        # watch as well as the live ones, so this week's side counts both.
+        # Compared against live alone, every contract kept under watch would
+        # count as a drop every week it stays kept, and enough of them would
+        # refuse every run. They cannot produce an event while kept, so
+        # counting them here hides no damage.
+        current_live=counts.current_live + counts.kept_under_watch,
         gone_candidates=counts.gone_candidates,
     )
     if reason is not None:
@@ -569,12 +647,14 @@ def report(counts: DiffCounts, refusal: Optional[str] = None) -> str:
         f"  said nothing about: {counts.gone_natural:,} that reached their end date, "
         f"{counts.new_award_withheld:,} new awards to withheld individuals, "
         f"{counts.new_but_amended:,} never-recorded contracts that arrived already amended, "
+        f"{counts.new_by_reference:,} never-recorded contracts keyed by reference number, "
         f"{counts.dates_unusable:,} unusable dates, "
         f"{counts.values_unusable:,} unusable values"
     )
     compared = (
         f"  also compared: {counts.returned:,} that came back after an absence, "
-        f"{counts.still_published:,} no longer live but still published"
+        f"{counts.still_published:,} no longer live but still published, "
+        f"of which {counts.kept_under_watch:,} kept under watch"
     )
     if refusal:
         return f"{head}\n{body}\n{quiet}\n{compared}\n  REFUSED: {refusal}. Nothing is written."

@@ -208,8 +208,20 @@ _MUTATORS = frozenset({
 # The only extra bindings of a watched name that are allowed, anywhere: the
 # site's command-line entry point fills the two run-time tables from their data
 # files, exactly as snapshot.load_site_rules does here, and the data files
-# themselves are compared line by line in WATCHED_DATA.
-_RUNTIME_LOADERS = {"VENDOR_ALLOWLIST", "CATEGORY_MERGES"}
+# themselves are compared line by line in WATCHED_DATA. Each table maps to the
+# one loader that may fill it.
+#
+# The statement must be exactly `TABLE = its_loader(...)`. The first version
+# exempted any assignment in main and never looked at the value, so
+# `VENDOR_ALLOWLIST -= {...}` in main passed while `.discard()` with the same
+# effect refused. An allowlist entry dropped that way is a name the site
+# withholds and the scanner publishes. Found by round three of the review, run
+# on 18 September 2026.
+_RUNTIME_LOADERS = {
+    "VENDOR_ALLOWLIST": "load_vendor_allowlist",
+    "CATEGORY_MERGES": "load_category_merges",
+}
+LOADED = "filled by its loader"
 
 
 def _other_bindings(source: str, symbols: Iterable[str]) -> list[tuple[str, str, str]]:
@@ -236,11 +248,14 @@ def _other_bindings(source: str, symbols: Iterable[str]) -> list[tuple[str, str,
 
     NOT caught, and said so rather than implied: deliberately disguised
     rebinding — globals()["NAME"] = ..., setattr on the module, exec(), or a
-    star-import from a module that defines the name. Round three of the review
-    tried each and judged none a realistic way to edit a word list: the site
-    file imports only the standard library and its history shows only plain
-    edits. A change in one of those forms would be a restructuring of the site
-    that a person re-copying vendor/ could not miss.
+    star-import from a module that defines the name. Round three of the review,
+    run on 18 September 2026, confirmed none of them is caught, and searched
+    both real site files for globals(), setattr, exec, eval, star-imports,
+    sys.modules, vars() and __dict__: none appears. The site imports only the
+    standard library. So none is judged a realistic way to edit a word list; a
+    change in one of those forms would be a restructuring of the site that a
+    person re-copying vendor/ could not miss. (The version of this paragraph
+    pushed on 17 September credited that round before it had run.)
     """
     wanted = set(symbols)
     tree = ast.parse(source)
@@ -259,6 +274,22 @@ def _other_bindings(source: str, symbols: Iterable[str]) -> list[tuple[str, str,
         if isinstance(node, ast.AnnAssign):
             targets.append(node.target)
         definition_nodes.update(id(t) for t in targets)
+
+    # The target of each `TABLE = its_loader(...)`. Only a single plain target
+    # counts: `TABLE = _SPARE = loader()` binds a second name to the same
+    # object, which can then be changed without the table's name appearing.
+    loader_targets: set[int] = set()
+    for stmt in ast.walk(tree):
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and stmt.targets[0].id in _RUNTIME_LOADERS
+            and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Name)
+            and stmt.value.func.id == _RUNTIME_LOADERS[stmt.targets[0].id]
+        ):
+            loader_targets.add(id(stmt.targets[0]))
 
     found: list[tuple[str, str, str]] = []
 
@@ -296,7 +327,12 @@ def _other_bindings(source: str, symbols: Iterable[str]) -> list[tuple[str, str,
                     and id(child) not in definition_nodes
                     and (rebinds is None or child.id in rebinds)
                 ):
-                    how = "assigned" if isinstance(child.ctx, ast.Store) else "deleted"
+                    if isinstance(child.ctx, ast.Del):
+                        how = "deleted"
+                    elif id(child) in loader_targets:
+                        how = LOADED
+                    else:
+                        how = "assigned"
                     found.append((child.id, how, where))
             elif isinstance(child, (ast.Global, ast.Nonlocal)):
                 found.extend((n, "declared global", where) for n in child.names if n in wanted)
@@ -332,7 +368,7 @@ def _unreadable_bindings(source: str, symbols: Iterable[str]) -> dict[str, int]:
         if (
             name in _RUNTIME_LOADERS
             and where == "main"
-            and how in ("declared global", "assigned")
+            and how in ("declared global", LOADED)
         ):
             continue
         out[name] = out.get(name, 0) + 1

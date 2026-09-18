@@ -24,6 +24,7 @@ import re
 import unittest
 
 import diff
+import snapshot
 from vendor import names
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -77,6 +78,24 @@ class TheScannerAndTheSchemaAgree(unittest.TestCase):
     def test_every_event_type_the_diff_emits_is_one_events_accepts(self):
         check = constraint(read_migration("0001_init.sql"), "events_type_check")
         self.assertTrue(set(diff.EVENT_TYPES) <= set(quoted(check)))
+
+    def test_the_largest_amount_kept_is_the_largest_the_column_holds(self):
+        # Round three, 18 September 2026: an amount the column cannot hold
+        # rolled back the week. snapshot._as_float now refuses it, and its
+        # limit is pinned here to the column's own declaration.
+        found = re.findall(r"^\s*contract_value\s+numeric\((\d+),\s*(\d+)\)",
+                           read_migration("0004_scanner.sql"), re.MULTILINE)
+        self.assertEqual(len(found), 1, "contract_snapshot.contract_value must be declared once")
+        precision, scale = (int(n) for n in found[0])
+        self.assertEqual(snapshot.LARGEST_STORABLE_VALUE, 10 ** (precision - scale))
+
+    def test_the_largest_amount_is_kept_and_the_next_cent_is_not(self):
+        largest = 10 ** 14 - 0.01
+        self.assertEqual(snapshot._as_float(largest), largest)
+        self.assertEqual(snapshot._as_float(str(largest)), largest)
+        for bad in ("1e14", "-1e14", "inf", "-Infinity", "nan", 1e300):
+            with self.subTest(value=bad):
+                self.assertIsNone(snapshot._as_float(bad))
 
     def test_the_check_can_tell_when_they_disagree(self):
         # The parsing above is the new part, so it is shown to see a
