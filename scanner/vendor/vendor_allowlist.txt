@@ -1,0 +1,33 @@
+# COPIED FROM  MarboCreatives/recompete-radar  vendor_allowlist.txt
+# SITE COMMIT  d09109f6abf2fda7ac287692f99e434ec4659ed6
+# SOURCE FILE  SHA-256 bfb1be45e05b0899575e777a8d1104bcabb3710e1f36e972029738ec54e93db9
+# COPIED ON    17 September 2026
+#
+# Vendors that must NEVER be treated as individual people.
+#
+# is_individual() is deliberately biased toward withholding: a false positive
+# costs a reader one company name, a missed suppression exposes a private
+# person. This file is how a real organisation gets its name back when a rule
+# reads it as a person.
+#
+# One name per line, exactly as it appears in vendor_name. Matching is on the
+# normalised form, so case and punctuation do not matter. A '#' starts a
+# comment. A missing file is fine — it just means nothing is allowlisted.
+#
+# Add a name here only after checking it really is an organisation. Every entry
+# is a deliberate decision to publish a name the rules wanted to withhold.
+
+# Accounting firm. Trips is_individual rule 3 because "raymond" is a given name
+# and none of "chabot", "grant" or "thornton" is a corporate word. Verified
+# against the live vendor list as the only false positive that rule produces.
+RAYMOND CHABOT GRANT THORNTON
+
+# Added 14 September 2026 with the individual-name fixes. Each is a company the
+# widened given-name test now reads as a person. Measured, not guessed: these
+# three were the only unambiguous firms among the 172 names the change newly
+# withheld. Names that could be a person trading under their own name were left
+# withheld, because withholding a company costs a reader one label and missing a
+# person exposes them.
+STEWART MCKELVEY
+RENE BLAIS LTE
+rene blaise lite
