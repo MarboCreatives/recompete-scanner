@@ -224,6 +224,47 @@ test('every sign-in problem shows its own sentence and none of the others', asyn
   }
 })
 
+test('a problem key naming a built-in does not crash the page', async () => {
+  // PROBLEMS is an object literal, so an unguarded PROBLEMS[problem] lookup
+  // reaches Object.prototype. ?problem=toString resolved to a function, React
+  // was asked to render it, and this page answered 500 on the live site on
+  // 8 September 2026 — along with constructor, __proto__, valueOf and
+  // hasOwnProperty, while every real key and any nonsense word answered 200.
+  //
+  // Two assertions, because either alone can be satisfied by the wrong fix. The
+  // status catches the crash. The absent alert catches a "fix" that renders
+  // something for a key that has no sentence, which would put a stray box on
+  // the page instead of a 500.
+  const builtins = [
+    'toString',
+    'constructor',
+    '__proto__',
+    'valueOf',
+    'hasOwnProperty',
+    'isPrototypeOf',
+    'propertyIsEnumerable',
+  ]
+  assert.ok(builtins.length > 0, 'an empty list here would prove nothing')
+
+  let checked = 0
+  for (const problem of builtins) {
+    const r = await fetch(`${BASE}/sign-in?problem=${encodeURIComponent(problem)}`)
+    assert.equal(r.status, 200, `?problem=${problem} must answer 200, not ${r.status}`)
+
+    const html = await r.text()
+    assert.ok(
+      !html.includes('role="alert"'),
+      `?problem=${problem} names no sentence, so the page must show no alert`,
+    )
+    assert.ok(
+      visibleText(html).includes('Email address'),
+      `?problem=${problem} must still render the sign-in form`,
+    )
+    checked += 1
+  }
+  assert.equal(checked, builtins.length, 'every name in the list must be tried')
+})
+
 test('an invalid or unknown link is refused with the right wording', async () => {
   const notShaped = visibleText(await (await fetch(`${BASE}/sign-in/verify?token=nope`)).text())
   assert.ok(notShaped.includes('This link is not valid.'))
